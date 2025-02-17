@@ -24,7 +24,8 @@ const io = new Server(httpServer, {
 const games = new Map<string, {
   hostId: string;
   teams: Array<{ id: string; name: string }>;
-  settings?: GameSettings;
+  settings: GameSettings;
+  timer?: NodeJS.Timeout;
   currentGame?: {
     currentTeamIndex: number;
     currentRound: number;
@@ -45,8 +46,8 @@ interface GameSettings {
   rounds: number;
   turnDuration: number;
   difficulty: 'easy' | 'medium' | 'hard';
-  categories?: string[];
-  difficulties?: string[];
+  categories: string[];
+  difficulties: ('easy' | 'medium' | 'hard')[];
 }
 
 interface Word {
@@ -95,8 +96,9 @@ io.on('connection', (socket) => {
       settings: {
         rounds: 3,
         turnDuration: 30,
+        difficulty: 'medium',
         difficulties: ['easy', 'medium'],
-        categories: ['Actions', 'Things', 'Places', 'Food & Drink', 'Hobbies', 'Entertainment']
+        categories: ['action', 'things', 'places', 'food & drink', 'hobbies', 'entertainment']
       },
       currentGame: undefined
     });
@@ -155,15 +157,15 @@ io.on('connection', (socket) => {
   socket.on('start-game', ({ gameCode }) => {
     try {
       const game = games.get(gameCode);
-      if (!game || socket.id !== game.hostId) {
+      if (!game || !game.settings || socket.id !== game.hostId) {
         socket.emit('error', { message: 'Unauthorized to start game' });
         return;
       }
 
       // Get filtered and shuffled words based on settings
       const availableWords = shuffleWords(getWords({
-        categories: game.settings.categories,
-        difficulties: game.settings.difficulties.map(d => d.toLowerCase())
+        categories: game.settings.categories || [],
+        difficulties: (game.settings.difficulties || []).map(d => d.toLowerCase()) as ('easy' | 'medium' | 'hard')[]
       }));
 
       if (availableWords.length === 0) {
@@ -188,7 +190,9 @@ io.on('connection', (socket) => {
 
       // Initialize scores for all teams
       game.teams.forEach(team => {
-        game.currentGame.scores[team.id] = 0;
+        if (game.currentGame) {
+          game.currentGame.scores[team.id] = 0;
+        }
       });
 
       // First send game-started event
@@ -328,7 +332,7 @@ io.on('connection', (socket) => {
 
 function startTurn(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame) return;
+  if (!game?.currentGame || !game.settings) return;
 
   // Reset turn state
   game.currentGame.timeRemaining = game.settings.turnDuration;
