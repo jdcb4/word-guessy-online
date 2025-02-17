@@ -1,11 +1,8 @@
 'use client';
 
-import React from 'react';
-import { Team, CurrentGame } from '@/types/game';
-
 interface SpectatorViewProps {
-  currentGame: CurrentGame;
-  teams: Team[];
+  currentGame: any;
+  teams: Array<{ id: string; name: string }>;
 }
 
 export function SpectatorView({ currentGame, teams }: SpectatorViewProps) {

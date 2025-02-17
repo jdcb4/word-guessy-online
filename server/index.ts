@@ -39,7 +39,6 @@ const games = new Map<string, {
     usedWords: Set<string>;
     availableWords: Word[];
     timer?: NodeJS.Timeout;
-    turnState: 'playing' | 'reviewing' | 'preparing';
   };
 }>();
 
@@ -186,8 +185,7 @@ io.on('connection', (socket) => {
         },
         usedWords: new Set(),
         availableWords,
-        currentWord: availableWords[0],
-        turnState: 'playing'
+        currentWord: availableWords[0]
       };
 
       // Initialize scores for all teams
@@ -232,19 +230,15 @@ io.on('connection', (socket) => {
           // When time runs out
           if (game.currentGame.timeRemaining <= 0) {
             clearInterval(timer);
-            // Set turn state to reviewing
-            game.currentGame.turnState = 'reviewing';
+            // Handle turn end
+            const nextTeamIndex = (game.currentGame.currentTeamIndex + 1) % game.teams.length;
+            game.currentGame.currentTeamIndex = nextTeamIndex;
+            game.currentGame.timeRemaining = game.settings.turnDuration;
+            game.currentGame.roundWords = { guessed: [], skipped: [] };
             
-            // Emit turn-ended with complete turn results
             io.to(gameCode).emit('turn-ended', {
-              nextTeamIndex: (game.currentGame.currentTeamIndex + 1) % game.teams.length,
-              scores: game.currentGame.scores,
-              roundWords: {
-                guessed: game.currentGame.roundWords.guessed,
-                skipped: game.currentGame.roundWords.skipped
-              },
-              currentTeam: game.teams[game.currentGame.currentTeamIndex].name,
-              nextTeam: game.teams[(game.currentGame.currentTeamIndex + 1) % game.teams.length].name
+              nextTeamIndex,
+              scores: game.currentGame.scores
             });
             
             // Send updated game state
@@ -262,8 +256,6 @@ io.on('connection', (socket) => {
 
       // Store the timer reference to clear it later if needed
       game.timer = timer;
-
-      console.log('Starting game with duration:', game.settings.turnDuration);
 
     } catch (error) {
       console.error('Error starting game:', error);
@@ -319,27 +311,6 @@ io.on('connection', (socket) => {
     io.to(gameCode).emit('game-state-update', game.currentGame);
   });
 
-  // Handle settings update
-  socket.on('update-settings', ({ gameCode, settings }) => {
-    const game = games.get(gameCode);
-    if (!game || socket.id !== game.hostId) {
-      socket.emit('error', { message: 'Unauthorized to update settings' });
-      return;
-    }
-
-    // Update the game settings
-    game.settings = {
-      ...game.settings,
-      ...settings
-    };
-
-    // Broadcast the updated settings to all players
-    io.to(gameCode).emit('game-updated', {
-      teams: game.teams,
-      settings: game.settings
-    });
-  });
-
   // Handle disconnection
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
@@ -357,145 +328,67 @@ io.on('connection', (socket) => {
       }
     }
   });
-
-  // Add new socket handlers inside io.on('connection', (socket) => { ... })
-  socket.on('confirm-turn-end', ({ gameCode }) => {
-    const game = games.get(gameCode);
-    if (!game?.currentGame) return;
-
-    const currentTeam = game.teams[game.currentGame.currentTeamIndex];
-    if (socket.id !== currentTeam.id) return;
-
-    // Update team index
-    game.currentGame.currentTeamIndex = 
-      (game.currentGame.currentTeamIndex + 1) % game.teams.length;
-
-    // Set turn state to preparing
-    game.currentGame.turnState = 'preparing';
-
-    // Emit prepare-turn event to all clients
-    io.to(gameCode).emit('prepare-turn', {
-      team: game.teams[game.currentGame.currentTeamIndex].name,
-      teamId: game.teams[game.currentGame.currentTeamIndex].id
-    });
-  });
-
-  socket.on('start-turn', ({ gameCode }) => {
-    const game = games.get(gameCode);
-    if (!game?.currentGame) return;
-
-    const currentTeam = game.teams[game.currentGame.currentTeamIndex];
-    if (socket.id !== currentTeam.id) return;
-
-    // Initialize the new turn
-    initializeTurn(gameCode);
-    
-    // Start the timer
-    startTurn(gameCode);
-
-    // Notify all clients about the new turn
-    io.to(gameCode).emit('game-state-update', {
-      currentTeamIndex: game.currentGame.currentTeamIndex,
-      currentRound: game.currentGame.currentRound,
-      scores: game.currentGame.scores,
-      timeRemaining: game.currentGame.timeRemaining,
-      currentWord: game.currentGame.currentWord,
-      roundWords: {
-        guessed: game.currentGame.roundWords.guessed,
-        skipped: game.currentGame.roundWords.skipped
-      },
-      turnState: game.currentGame.turnState
-    });
-  });
 });
-
-function initializeTurn(gameCode: string) {
-  const game = games.get(gameCode);
-  if (!game?.currentGame) return;
-
-  // Reset round words
-  game.currentGame.roundWords = {
-    guessed: [],
-    skipped: []
-  };
-
-  // Reset timer
-  game.currentGame.timeRemaining = game.settings.turnDuration;
-
-  // Get next word
-  const nextWord = game.currentGame.availableWords.pop();
-  game.currentGame.currentWord = nextWord;
-
-  // Set turn state to playing
-  game.currentGame.turnState = 'playing';
-
-  // Start the timer
-  startTurn(gameCode);
-}
 
 function startTurn(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame) return;
+  if (!game?.currentGame || !game.settings) return;
 
-  // Clear any existing timer
-  if (game.timer) {
-    clearInterval(game.timer);
-    game.timer = undefined;
+  // Reset turn state
+  game.currentGame.timeRemaining = game.settings.turnDuration;
+  game.currentGame.roundWords = { guessed: [], skipped: [] };
+
+  // Get first word for the turn
+  const nextWord = game.currentGame.availableWords.find(w => 
+    !game.currentGame?.usedWords.has(w.word)
+  );
+  game.currentGame.currentWord = nextWord;
+
+  // Start timer
+  if (game.currentGame.timer) {
+    clearInterval(game.currentGame.timer);
   }
 
-  // Start new timer
-  const timer = setInterval(() => {
-    const game = games.get(gameCode);
-    if (!game?.currentGame) {
-      clearInterval(timer);
-      return;
-    }
+  game.currentGame.timer = setInterval(() => {
+    if (!game.currentGame) return;
 
     game.currentGame.timeRemaining--;
-
-    // Send a minimal game state update for the timer
-    io.to(gameCode).emit('game-state-update', {
-      currentTeamIndex: game.currentGame.currentTeamIndex,
-      currentRound: game.currentGame.currentRound,
-      scores: game.currentGame.scores,
-      timeRemaining: game.currentGame.timeRemaining,
-      currentWord: game.currentGame.currentWord,
-      roundWords: {
-        guessed: game.currentGame.roundWords.guessed,
-        skipped: game.currentGame.roundWords.skipped
-      },
-      turnState: game.currentGame.turnState
-    });
-
-    // When time runs out
+    
     if (game.currentGame.timeRemaining <= 0) {
-      clearInterval(timer);
-      handleTurnEnd(gameCode);
+      clearInterval(game.currentGame.timer);
+      endTurn(gameCode);
+    } else {
+      io.to(gameCode).emit('game-state-update', game.currentGame);
     }
   }, 1000);
 
-  // Store the timer reference
-  game.timer = timer;
+  io.to(gameCode).emit('game-state-update', game.currentGame);
 }
 
-function handleTurnEnd(gameCode: string) {
+function endTurn(gameCode: string) {
   const game = games.get(gameCode);
   if (!game?.currentGame) return;
 
-  // Set turn state to reviewing
-  game.currentGame.turnState = 'reviewing';
-  
-  // Emit turn-ended with complete turn results
-  io.to(gameCode).emit('turn-ended', {
-    nextTeamIndex: (game.currentGame.currentTeamIndex + 1) % game.teams.length,
-    scores: game.currentGame.scores,
-    roundWords: {
-      guessed: game.currentGame.roundWords.guessed,
-      skipped: game.currentGame.roundWords.skipped
-    },
-    currentTeam: game.teams[game.currentGame.currentTeamIndex].name,
-    nextTeam: game.teams[(game.currentGame.currentTeamIndex + 1) % game.teams.length].name
-  });
+  // Clear timer
+  if (game.currentGame.timer) {
+    clearInterval(game.currentGame.timer);
+  }
+
+  // Move to next team
+  game.currentGame.currentTeamIndex = 
+    (game.currentGame.currentTeamIndex + 1) % game.teams.length;
+
+  // Check if round is complete
+  if (game.currentGame.currentTeamIndex === 0) {
+    game.currentGame.currentRound++;
+  }
+
+  // Check if game is over
+  if (game.currentGame.currentRound > game.settings.rounds) {
+    endGame(gameCode);
+  } else {
+    startTurn(gameCode);
+  }
 }
 
 function endGame(gameCode: string) {

@@ -8,19 +8,6 @@ import { socketService } from '@/services/socketService';
 import { RootState, gameActions } from '@/store';
 import { ActiveTeamView } from '@/components/ActiveTeamView';
 import { SpectatorView } from '@/components/SpectatorView';
-import { TurnEndScreen } from '@/components/TurnEndScreen';
-import { BeginTurnScreen } from '@/components/BeginTurnScreen';
-
-interface TurnEndData {
-  nextTeamIndex: number;
-  scores: Record<string, number>;
-  roundWords: {
-    guessed: string[];
-    skipped: string[];
-  };
-  currentTeam: string;
-  nextTeam: string;
-}
 
 export default function Game() {
   const params = useParams();
@@ -28,8 +15,6 @@ export default function Game() {
   const dispatch = useDispatch();
   const { teams, currentGame, settings } = useSelector((state: RootState) => state.game);
   const [isMyTurn, setIsMyTurn] = useState(false);
-  const [turnEndData, setTurnEndData] = useState<TurnEndData | null>(null);
-  const [prepareTurnData, setPrepareTurnData] = useState<any>(null);
 
   // Handle game state updates from server
   const handleGameStateUpdate = useCallback((gameState: any) => {
@@ -39,9 +24,12 @@ export default function Game() {
     );
   }, [dispatch, teams]);
 
-  const handleTurnEnd = useCallback((data: TurnEndData) => {
+  const handleTurnEnd = useCallback((data: { 
+    nextTeamIndex: number;
+    scores: Record<string, number>;
+  }) => {
     dispatch(gameActions.updateScore(data.scores));
-    setTurnEndData(data);
+    // Additional turn end logic if needed
   }, [dispatch]);
 
   const handleGameEnd = useCallback((data: {
@@ -60,21 +48,13 @@ export default function Game() {
     socket.emit('get-game-state', { gameCode: gameCodeString });
     
     socket.on('game-state-update', handleGameStateUpdate);
-    socket.on('turn-ended', (data) => {
-      setTurnEndData(data);
-      handleTurnEnd(data);
-    });
+    socket.on('turn-ended', handleTurnEnd);
     socket.on('game-ended', handleGameEnd);
-    socket.on('prepare-turn', (data) => {
-      setTurnEndData(null);
-      setPrepareTurnData(data);
-    });
 
     return () => {
       socket.off('game-state-update', handleGameStateUpdate);
       socket.off('turn-ended', handleTurnEnd);
       socket.off('game-ended', handleGameEnd);
-      socket.off('prepare-turn');
     };
   }, [handleGameStateUpdate, handleTurnEnd, handleGameEnd, params.code]);
 
@@ -94,47 +74,19 @@ export default function Game() {
     });
   };
 
-  const handleConfirmTurnEnd = () => {
-    const socket = socketService.getSocket();
-    socket.emit('confirm-turn-end', { gameCode: params.code });
-  };
-
-  const handleStartTurn = () => {
-    const socket = socketService.getSocket();
-    socket.emit('start-turn', { gameCode: params.code });
-    setPrepareTurnData(null);
-  };
-
   return (
     <div className="min-h-screen flex flex-col items-center p-4">
-      {turnEndData && (
-        <TurnEndScreen
-          {...turnEndData}
-          onConfirmEnd={handleConfirmTurnEnd}
+      {isMyTurn ? (
+        <ActiveTeamView
+          currentGame={currentGame}
+          onCorrectGuess={handleCorrectGuess}
+          onSkip={handleSkip}
         />
-      )}
-      
-      {prepareTurnData && (
-        <BeginTurnScreen
-          team={prepareTurnData.team}
-          isMyTurn={prepareTurnData.teamId === socketService.getSocket().id}
-          onStartTurn={handleStartTurn}
+      ) : (
+        <SpectatorView
+          currentGame={currentGame}
+          teams={teams}
         />
-      )}
-
-      {!turnEndData && !prepareTurnData && (
-        isMyTurn ? (
-          <ActiveTeamView
-            currentGame={currentGame}
-            onCorrectGuess={handleCorrectGuess}
-            onSkip={handleSkip}
-          />
-        ) : (
-          <SpectatorView
-            currentGame={currentGame}
-            teams={teams}
-          />
-        )
       )}
     </div>
   );
