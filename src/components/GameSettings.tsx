@@ -2,8 +2,10 @@
 
 import { useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useParams } from 'next/navigation';
 import { RootState, gameActions } from '@/store';
 import { Button } from './Button';
+import { socketService } from '@/services/socketService';
 
 const CATEGORIES = [
   'action',
@@ -33,6 +35,7 @@ const TURN_DURATIONS = [5, 15, 30, 45];
 
 export function GameSettings() {
   const dispatch = useDispatch();
+  const params = useParams();
   const settings = useSelector((state: RootState) => state.game.settings);
   const [expanded, setExpanded] = useState(false);
 
@@ -50,6 +53,17 @@ export function GameSettings() {
       : [...settings.difficulties, difficulty];
     
     dispatch(gameActions.updateSettings({ difficulties: newDifficulties }));
+  };
+
+  const handleTurnDurationChange = (duration: number) => {
+    dispatch(gameActions.updateSettings({ turnDuration: duration }));
+    
+    // Send the update to the server
+    const socket = socketService.getSocket();
+    socket.emit('update-settings', {
+      gameCode: params.code,
+      settings: { turnDuration: duration }
+    });
   };
 
   return (
@@ -86,7 +100,7 @@ export function GameSettings() {
               {TURN_DURATIONS.map(duration => (
                 <button
                   key={duration}
-                  onClick={() => dispatch(gameActions.updateSettings({ turnDuration: duration }))}
+                  onClick={() => handleTurnDurationChange(duration)}
                   className={`px-3 py-1 rounded ${
                     settings.turnDuration === duration
                       ? 'bg-foreground text-background'

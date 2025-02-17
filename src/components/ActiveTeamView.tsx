@@ -2,9 +2,10 @@
 
 import { useEffect } from 'react';
 import { Button } from './Button';
+import { CurrentGame } from '@/types/game';
 
 interface ActiveTeamViewProps {
-  currentGame: any;
+  currentGame: CurrentGame;
   onCorrectGuess: () => void;
   onSkip: () => void;
 }
