@@ -15,9 +15,15 @@ app.use(cors());
 // Initialize Socket.io
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:3000", // Your Next.js app URL
-    methods: ["GET", "POST"]
-  }
+    origin: ["http://localhost:3000", "http://127.0.0.1:3000"], // Allow both localhost variations
+    methods: ["GET", "POST"],
+    credentials: true,
+    allowedHeaders: ["my-custom-header"],
+  },
+  // Add transport options
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 // Store active games
@@ -78,7 +84,12 @@ interface GameState {
 
 // Generate a random 6-character game code
 function generateGameCode(): string {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return code;
 }
 
 // Handle socket connections
@@ -86,31 +97,48 @@ io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
   // Handle hosting a new game
-  socket.on('host-game', ({ teamName }) => {
-    const gameCode = generateGameCode();
-    
-    // Initialize the game with default settings
-    games.set(gameCode, {
-      hostId: socket.id,
-      teams: [{ id: socket.id, name: teamName }],
-      settings: {
-        rounds: 3,
-        turnDuration: 30,
-        difficulty: 'medium',
-        difficulties: ['easy', 'medium'],
-        categories: ['action', 'things', 'places', 'food & drink', 'hobbies', 'entertainment']
-      },
-      currentGame: undefined
-    });
-    
-    socket.join(gameCode);
-    socket.emit('game-created', { gameCode });
-    
-    // Emit initial game state
-    io.to(gameCode).emit('game-updated', { 
-      teams: games.get(gameCode)?.teams || [],
-      settings: games.get(gameCode)?.settings
-    });
+  socket.on('host-game', ({ teamName, settings }) => {
+    try {
+      console.log('Hosting game request received:', { teamName, settings });
+      
+      const gameCode = generateGameCode();
+      console.log('Generated game code:', gameCode);
+      
+      // Initialize the game with provided settings
+      const gameData = {
+        hostId: socket.id,
+        teams: [{ id: socket.id, name: teamName }],
+        settings: {
+          ...settings,
+          turnDuration: settings.turnDuration || 30, // Ensure turnDuration has a default
+          categories: settings.categories || [],
+          difficulties: settings.difficulties || ['easy']
+        },
+        currentGame: undefined
+      };
+      
+      games.set(gameCode, gameData);
+      console.log('Game created:', gameCode);
+      
+      // Join the socket to the game room
+      socket.join(gameCode);
+      
+      // Emit game created event
+      socket.emit('game-created', { gameCode });
+      
+      // Broadcast initial game state
+      io.to(gameCode).emit('game-updated', {
+        teams: gameData.teams,
+        settings: gameData.settings
+      });
+      
+      console.log('Game creation completed');
+    } catch (error) {
+      console.error('Error creating game:', error);
+      socket.emit('error', { 
+        message: 'Failed to create game. Please try again.' 
+      });
+    }
   });
 
   // Handle getting game state
@@ -165,7 +193,7 @@ io.on('connection', (socket) => {
       // Get filtered and shuffled words based on settings
       const availableWords = shuffleWords(getWords({
         categories: game.settings.categories || [],
-        difficulties: (game.settings.difficulties || []).map(d => d.toLowerCase()) as ('easy' | 'medium' | 'hard')[]
+        difficulties: game.settings.difficulties.map(d => d.toLowerCase()) as ('easy' | 'medium' | 'hard')[]
       }));
 
       if (availableWords.length === 0) {
@@ -173,12 +201,12 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Initialize game state
+      // Initialize game state with the correct turn duration
       game.currentGame = {
         currentTeamIndex: 0,
         currentRound: 1,
         scores: {},
-        timeRemaining: game.settings.turnDuration,
+        timeRemaining: game.settings.turnDuration, // Use selected turnDuration
         roundWords: {
           guessed: [],
           skipped: []
@@ -195,12 +223,12 @@ io.on('connection', (socket) => {
         }
       });
 
-      // First send game-started event
+      // Emit game-started event
       io.to(gameCode).emit('game-started', { 
         redirect: `/game/${gameCode}` 
       });
 
-      // Then send initial game state to all players
+      // Emit initial game state to all players
       io.to(gameCode).emit('game-state-update', {
         currentTeamIndex: game.currentGame.currentTeamIndex,
         currentRound: game.currentGame.currentRound,
@@ -211,52 +239,10 @@ io.on('connection', (socket) => {
         teams: game.teams // Include teams in the update
       });
 
-      // Start the timer
-      const timer = setInterval(() => {
-        const game = games.get(gameCode);
-        if (game && game.currentGame) {
-          game.currentGame.timeRemaining--;
-          
-          // Emit time update to all players
-          io.to(gameCode).emit('game-state-update', {
-            currentTeamIndex: game.currentGame.currentTeamIndex,
-            currentRound: game.currentGame.currentRound,
-            scores: game.currentGame.scores,
-            timeRemaining: game.currentGame.timeRemaining,
-            currentWord: game.currentGame.currentWord,
-            roundWords: game.currentGame.roundWords
-          });
+      // Start the first turn with correct settings
+      startTurn(gameCode);
 
-          // When time runs out
-          if (game.currentGame.timeRemaining <= 0) {
-            clearInterval(timer);
-            // Handle turn end
-            const nextTeamIndex = (game.currentGame.currentTeamIndex + 1) % game.teams.length;
-            game.currentGame.currentTeamIndex = nextTeamIndex;
-            game.currentGame.timeRemaining = game.settings.turnDuration;
-            game.currentGame.roundWords = { guessed: [], skipped: [] };
-            
-            io.to(gameCode).emit('turn-ended', {
-              nextTeamIndex,
-              scores: game.currentGame.scores
-            });
-            
-            // Send updated game state
-            io.to(gameCode).emit('game-state-update', {
-              currentTeamIndex: game.currentGame.currentTeamIndex,
-              currentRound: game.currentGame.currentRound,
-              scores: game.currentGame.scores,
-              timeRemaining: game.currentGame.timeRemaining,
-              currentWord: game.currentGame.currentWord,
-              roundWords: game.currentGame.roundWords
-            });
-          }
-        }
-      }, 1000);
-
-      // Store the timer reference to clear it later if needed
-      game.timer = timer;
-
+      console.log('Game started:', gameCode);
     } catch (error) {
       console.error('Error starting game:', error);
       socket.emit('error', { 
@@ -334,21 +320,22 @@ function startTurn(gameCode: string) {
   const game = games.get(gameCode);
   if (!game?.currentGame || !game.settings) return;
 
-  // Reset turn state
+  // Reset turn state with the correct turn duration
   game.currentGame.timeRemaining = game.settings.turnDuration;
   game.currentGame.roundWords = { guessed: [], skipped: [] };
 
-  // Get first word for the turn
+  // Get the next word for the turn
   const nextWord = game.currentGame.availableWords.find(w => 
-    !game.currentGame?.usedWords.has(w.word)
+    !game.currentGame.usedWords.has(w.word)
   );
   game.currentGame.currentWord = nextWord;
 
-  // Start timer
+  // Clear any existing timer
   if (game.currentGame.timer) {
     clearInterval(game.currentGame.timer);
   }
 
+  // Start the timer
   game.currentGame.timer = setInterval(() => {
     if (!game.currentGame) return;
 
@@ -362,6 +349,7 @@ function startTurn(gameCode: string) {
     }
   }, 1000);
 
+  // Emit the updated game state
   io.to(gameCode).emit('game-state-update', game.currentGame);
 }
 

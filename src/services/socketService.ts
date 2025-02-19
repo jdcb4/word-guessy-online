@@ -2,38 +2,55 @@ import { io, Socket } from 'socket.io-client';
 
 class SocketService {
   private socket: Socket | null = null;
-  private static instance: SocketService;
+  private readonly serverUrl = 'http://localhost:3001';
 
-  private constructor() {}
-
-  static getInstance(): SocketService {
-    if (!SocketService.instance) {
-      SocketService.instance = new SocketService();
-    }
-    return SocketService.instance;
-  }
-
-  connect() {
+  connect(): Socket {
     if (!this.socket) {
-      this.socket = io('http://localhost:3001');
+      this.socket = io(this.serverUrl, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+        timeout: 20000,
+        withCredentials: true,
+      });
+
+      console.log('Socket connecting...');
       
       this.socket.on('connect', () => {
-        console.log('Connected to server');
+        console.log('Socket connected:', this.socket?.id);
       });
 
-      this.socket.on('error', (error) => {
-        console.error('Socket error:', error);
+      this.socket.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+        // Attempt to reconnect with websocket transport
+        this.socket?.io.opts.transports = ['websocket'];
+      });
+
+      this.socket.on('disconnect', (reason) => {
+        console.log('Socket disconnected:', reason);
+        if (reason === 'io server disconnect') {
+          // Reconnect if the server disconnected
+          this.socket?.connect();
+        }
       });
     }
     return this.socket;
   }
 
-  getSocket() {
-    if (!this.socket) {
-      throw new Error('Socket not connected. Call connect() first.');
+  getSocket(): Socket {
+    if (!this.socket || !this.socket.connected) {
+      return this.connect();
     }
     return this.socket;
+  }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
   }
 }
 
-export const socketService = SocketService.getInstance(); 
+export const socketService = new SocketService(); 

@@ -3,9 +3,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/Button';
 import { useRouter } from 'next/navigation';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { socketService } from '@/services/socketService';
-import { gameActions } from '@/store';
+import { gameActions, RootState } from '@/store';
 
 type Tab = 'host' | 'join';
 
@@ -17,18 +17,17 @@ export default function OnlineSetup() {
 
   const router = useRouter();
   const dispatch = useDispatch();
+  const { settings } = useSelector((state: RootState) => state.game);
 
   // Memoize the handlers to keep them stable between renders
-  const handleGameCreated = useCallback((data: { gameCode: string }) => {
-    if (data && data.gameCode) {
-      dispatch(gameActions.setGameCode(data.gameCode));
-      dispatch(gameActions.setIsHost(true));
-      dispatch(gameActions.setTeams([{ 
-        id: socketService.getSocket().id, 
-        name: teamName 
-      }]));
-      router.push(`/waiting-room/${data.gameCode}`);
-    }
+  const handleGameCreated = useCallback(({ gameCode }: { gameCode: string }) => {
+    dispatch(gameActions.setGameCode(gameCode));
+    dispatch(gameActions.setIsHost(true));
+    dispatch(gameActions.setTeams([{ 
+      id: socketService.getSocket().id, 
+      name: teamName 
+    }]));
+    router.push(`/waiting-room/${gameCode}`);
   }, [dispatch, router, teamName]);
 
   const handleGameUpdate = useCallback((data: { 
@@ -57,33 +56,92 @@ export default function OnlineSetup() {
   }, [dispatch, router]);
 
   useEffect(() => {
+    console.log('Setting up socket listeners...');
     const socket = socketService.connect();
 
-    socket.on('game-created', handleGameCreated);
-    socket.on('game-updated', handleGameUpdate);
-    socket.on('error', handleError);
-    socket.on('game-joined', handleGameJoined); // Add listener for game-joined event
+    socket.on('connect', () => {
+      console.log('Socket connected successfully');
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
+      setError('Connection error. Please try again.');
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', reason);
+      if (reason === 'io server disconnect') {
+        socket.connect();
+      }
+    });
+
+    socket.on('game-created', (data) => {
+      console.log('Game created:', data);
+      handleGameCreated(data);
+    });
+
+    socket.on('game-updated', (data) => {
+      console.log('Game updated:', data);
+      handleGameUpdate(data);
+    });
+
+    socket.on('error', (data) => {
+      console.error('Socket error:', data);
+      handleError(data);
+    });
+
+    socket.on('game-joined', (data) => {
+      console.log('Game joined:', data);
+      handleGameJoined(data);
+    });
 
     return () => {
-      socket.off('game-created', handleGameCreated);
-      socket.off('game-updated', handleGameUpdate);
-      socket.off('error', handleError);
-      socket.off('game-joined', handleGameJoined); // Clean up
+      console.log('Cleaning up socket listeners...');
+      socket.off('connect');
+      socket.off('connect_error');
+      socket.off('disconnect');
+      socket.off('game-created');
+      socket.off('game-updated');
+      socket.off('error');
+      socket.off('game-joined');
     };
   }, [handleGameCreated, handleGameUpdate, handleError, handleGameJoined]);
 
-  const handleHostGame = (e: React.FormEvent) => {
+  const handleHostGame = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (!teamName.trim()) {
       setError('Team name is required');
       return;
     }
     setError(null);
-    const socket = socketService.getSocket();
-    socket.emit('host-game', { 
-      teamName: teamName.trim() 
-    });
-  };
+    
+    try {
+      console.log('Attempting to create game...');
+      const socket = socketService.getSocket();
+      
+      // Ensure we have a socket connection
+      if (!socket.connected) {
+        console.log('Socket not connected, attempting to connect...');
+        socket.connect();
+      }
+      
+      // Emit the host-game event with current settings
+      socket.emit('host-game', {
+        teamName: teamName.trim(),
+        settings: {
+          ...settings,
+          turnDuration: settings.turnDuration || 30,
+          categories: settings.categories || [],
+          difficulties: settings.difficulties || ['easy']
+        }
+      });
+      
+      console.log('Host game event emitted');
+    } catch (error) {
+      console.error('Error hosting game:', error);
+      setError('Failed to create game. Please try again.');
+    }
+  }, [teamName, settings]);
 
   const handleJoinGame = (e: React.FormEvent) => {
     e.preventDefault();
