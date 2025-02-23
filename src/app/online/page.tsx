@@ -109,21 +109,22 @@ export default function OnlineSetup() {
 
   const handleHostGame = useCallback((e: React.FormEvent) => {
     e.preventDefault();
-    if (!teamName.trim()) {
-      setError('Team name is required');
-      return;
-    }
-    setError(null);
-    
     try {
-      console.log('Attempting to create game...');
-      const socket = socketService.getSocket();
+      console.log('Team Name:', teamName);
+      console.log('Current Settings:', settings);
       
-      // Ensure we have a socket connection
-      if (!socket.connected) {
-        console.log('Socket not connected, attempting to connect...');
-        socket.connect();
+      if (!teamName.trim()) {
+        setError('Team name is required');
+        return;
       }
+      setError(null);
+      
+      const socket = socketService.getSocket();
+      console.log('Socket Status:', {
+        id: socket.id,
+        connected: socket.connected,
+        disconnected: socket.disconnected
+      });
       
       // Emit the host-game event with current settings
       socket.emit('host-game', {
@@ -138,7 +139,8 @@ export default function OnlineSetup() {
       
       console.log('Host game event emitted');
     } catch (error) {
-      console.error('Error hosting game:', error);
+      console.error('Detailed hosting error:', error);
+      console.error('Error stack:', error.stack);
       setError('Failed to create game. Please try again.');
     }
   }, [teamName, settings]);

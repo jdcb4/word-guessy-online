@@ -35,23 +35,14 @@ export default function WaitingRoom() {
       settings.difficulties.length > 0;
   }, [teams.length, settings.categories.length, settings.difficulties.length]);
 
-  const handleStartGame = () => {
-    const socket = socketService.getSocket();
-    socket.emit('start-game', { gameCode: params.code });
-  };
-
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(params.code as string);
-  };
+  const handleGameStarted = useCallback(() => {
+    console.log('Game started, redirecting to game page');
+    router.push(`/game/${params.code}`);
+  }, [router, params.code]);
 
   useEffect(() => {
-    const socket = socketService.connect();
+    const socket = socketService.getSocket();
     const gameCodeString = params.code as string;
-
-    const handleGameStarted = (data: { redirect: string }) => {
-      dispatch(gameActions.setIsPlaying(true));
-      router.push(`/game/${gameCodeString}`);
-    };
 
     // Listen for game updates (including initial state)
     socket.on('game-updated', handleGameUpdate);
@@ -71,6 +62,16 @@ export default function WaitingRoom() {
       socket.off('error');
     };
   }, [params.code, handleGameUpdate, handleGameEnd, dispatch, router]);
+
+  const handleStartGame = () => {
+    console.log('Requesting game start');
+    const socket = socketService.getSocket();
+    socket.emit('start-game', { gameCode: params.code });
+  };
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(params.code as string);
+  };
 
   return (
     <div className="min-h-screen flex flex-col items-center p-4">

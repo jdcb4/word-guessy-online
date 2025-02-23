@@ -61,7 +61,7 @@ const initialState: GameState = {
     rounds: 3,
     turnDuration: 30,
     difficulties: ['easy', 'medium'],
-    categories: ['Actions', 'Things', 'Places', 'Food & Drink', 'Hobbies', 'Entertainment']
+    categories: ['action', 'things', 'places', 'food & drink', 'hobbies', 'entertainment']
   },
   currentGame: null
 };

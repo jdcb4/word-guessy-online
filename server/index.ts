@@ -15,13 +15,14 @@ app.use(cors());
 // Initialize Socket.io
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"], // Allow both localhost variations
+    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
     methods: ["GET", "POST"],
     credentials: true,
-    allowedHeaders: ["my-custom-header"],
+    allowedHeaders: ["*"]
   },
-  // Add transport options
-  transports: ['websocket', 'polling'],
+  // Add transport configuration
+  transports: ['polling', 'websocket'],
+  allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000
 });
@@ -32,12 +33,14 @@ const games = new Map<string, {
   teams: Array<{ id: string; name: string }>;
   settings: GameSettings;
   timer?: NodeJS.Timeout;
+  words?: GameWords;
   currentGame?: {
     currentTeamIndex: number;
     currentRound: number;
     scores: Record<string, number>;
     currentWord?: Word;
     timeRemaining: number;
+    currentCategory: string;
     roundWords: {
       guessed: string[];
       skipped: string[];
@@ -54,6 +57,10 @@ interface GameSettings {
   difficulty: 'easy' | 'medium' | 'hard';
   categories: string[];
   difficulties: ('easy' | 'medium' | 'hard')[];
+  teams: {
+    maxTeams: number;
+    names: string[];
+  };
 }
 
 interface Word {
@@ -80,6 +87,13 @@ interface GameState {
     availableWords: Word[];
     timer?: NodeJS.Timeout;
   };
+}
+
+interface GameWords {
+  byCategory: {
+    [category: string]: Word[];
+  };
+  usedWords: Set<string>;
 }
 
 // Generate a random 6-character game code
@@ -110,7 +124,7 @@ io.on('connection', (socket) => {
         teams: [{ id: socket.id, name: teamName }],
         settings: {
           ...settings,
-          turnDuration: settings.turnDuration || 30, // Ensure turnDuration has a default
+          turnDuration: settings.turnDuration || 30,
           categories: settings.categories || [],
           difficulties: settings.difficulties || ['easy']
         },
@@ -134,7 +148,8 @@ io.on('connection', (socket) => {
       
       console.log('Game creation completed');
     } catch (error) {
-      console.error('Error creating game:', error);
+      console.error('Detailed host-game error:', error);
+      console.error('Error stack:', error.stack);
       socket.emit('error', { 
         message: 'Failed to create game. Please try again.' 
       });
@@ -144,18 +159,22 @@ io.on('connection', (socket) => {
   // Handle getting game state
   socket.on('get-game-state', ({ gameCode }) => {
     const game = games.get(gameCode);
-    if (game) {
-      socket.emit('game-state-update', { 
-        teams: game.teams,
-        settings: game.settings,
-        currentTeamIndex: game.currentGame?.currentTeamIndex,
-        currentRound: game.currentGame?.currentRound,
-        scores: game.currentGame?.scores,
-        timeRemaining: game.currentGame?.timeRemaining,
-        currentWord: game.currentGame?.currentWord,
-        roundWords: game.currentGame?.roundWords
-      });
+    if (!game?.currentGame) {
+      socket.emit('error', { message: 'Game not found' });
+      return;
     }
+
+    // Send current game state to the requesting client
+    socket.emit('game-state', {
+      currentTeamIndex: game.currentGame.currentTeamIndex,
+      currentRound: game.currentGame.currentRound,
+      scores: game.currentGame.scores,
+      timeRemaining: game.currentGame.timeRemaining,
+      currentWord: game.currentGame.currentWord,
+      currentCategory: game.currentGame.currentCategory,
+      roundWords: game.currentGame.roundWords,
+      teams: game.teams
+    });
   });
 
   // Handle joining a game
@@ -167,8 +186,16 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Add team to the game
+    // Check if game is full
+    if (game.teams.length >= game.settings.teams.maxTeams) {
+      socket.emit('error', { message: 'Game is full' });
+      return;
+    }
+
+    // Add the new team
     game.teams.push({ id: socket.id, name: teamName });
+    
+    // Join the socket to the game room
     socket.join(gameCode);
 
     // Notify all players in the game about the new team
@@ -184,70 +211,72 @@ io.on('connection', (socket) => {
   // Handle starting the game
   socket.on('start-game', ({ gameCode }) => {
     try {
+      console.log('Starting game for code:', gameCode);
       const game = games.get(gameCode);
-      if (!game || !game.settings || socket.id !== game.hostId) {
+      
+      if (!game) {
+        console.error('Game not found:', gameCode);
+        socket.emit('error', { message: 'Game not found' });
+        return;
+      }
+
+      if (!game.settings) {
+        console.error('Game settings not found:', gameCode);
+        socket.emit('error', { message: 'Invalid game settings' });
+        return;
+      }
+
+      if (socket.id !== game.hostId) {
+        console.error('Unauthorized start attempt:', socket.id, 'expected:', game.hostId);
         socket.emit('error', { message: 'Unauthorized to start game' });
         return;
       }
 
-      // Get filtered and shuffled words based on settings
-      const availableWords = shuffleWords(getWords({
-        categories: game.settings.categories || [],
+      console.log('Loading words with settings:', {
+        categories: game.settings.categories,
+        difficulties: game.settings.difficulties
+      });
+
+      // Load and organize all available words
+      const allWords = getWords({
+        categories: game.settings.categories,
         difficulties: game.settings.difficulties.map(d => d.toLowerCase()) as ('easy' | 'medium' | 'hard')[]
-      }));
+      });
 
-      if (availableWords.length === 0) {
-        socket.emit('error', { message: 'No words available with current settings' });
-        return;
-      }
+      console.log('Loaded words count:', allWords.length);
 
-      // Initialize game state with the correct turn duration
+      // Initialize game state
       game.currentGame = {
         currentTeamIndex: 0,
         currentRound: 1,
         scores: {},
-        timeRemaining: game.settings.turnDuration, // Use selected turnDuration
+        timeRemaining: game.settings.turnDuration,
+        currentCategory: '',
         roundWords: {
           guessed: [],
           skipped: []
         },
         usedWords: new Set(),
-        availableWords,
-        currentWord: availableWords[0]
+        availableWords: allWords,
+        timer: undefined
       };
 
       // Initialize scores for all teams
       game.teams.forEach(team => {
-        if (game.currentGame) {
-          game.currentGame.scores[team.id] = 0;
-        }
+        game.currentGame!.scores[team.id] = 0;
       });
 
-      // Emit game-started event
-      io.to(gameCode).emit('game-started', { 
-        redirect: `/game/${gameCode}` 
-      });
+      console.log('Game initialized, preparing first turn');
 
-      // Emit initial game state to all players
-      io.to(gameCode).emit('game-state-update', {
-        currentTeamIndex: game.currentGame.currentTeamIndex,
-        currentRound: game.currentGame.currentRound,
-        scores: game.currentGame.scores,
-        timeRemaining: game.currentGame.timeRemaining,
-        currentWord: game.currentGame.currentWord,
-        roundWords: game.currentGame.roundWords,
-        teams: game.teams // Include teams in the update
-      });
+      // Notify all clients that the game has started
+      io.to(gameCode).emit('game-started');
 
-      // Start the first turn with correct settings
-      startTurn(gameCode);
+      // Prepare the first turn (this will emit turn-ready event)
+      prepareTurn(gameCode);
 
-      console.log('Game started:', gameCode);
     } catch (error) {
       console.error('Error starting game:', error);
-      socket.emit('error', { 
-        message: 'Failed to start game. Please try again.' 
-      });
+      socket.emit('error', { message: 'Failed to start game' });
     }
   });
 
@@ -265,13 +294,34 @@ io.on('connection', (socket) => {
     game.currentGame.roundWords.guessed.push(word);
     game.currentGame.usedWords.add(word);
 
-    // Get next word
-    const nextWord = game.currentGame.availableWords.find(w => 
-      !game.currentGame?.usedWords.has(w.word)
+    // Get next word from the same category
+    const currentCategory = game.currentGame.currentCategory;
+    const categoryWords = game.currentGame.availableWords.filter(w => 
+      w.category === currentCategory && !game.currentGame?.usedWords.has(w.word)
     );
+
+    if (categoryWords.length === 0) {
+      console.log('No more words in category, ending turn');
+      endTurn(gameCode);
+      return;
+    }
+
+    // Select random word from remaining category words
+    const randomIndex = Math.floor(Math.random() * categoryWords.length);
+    const nextWord = categoryWords[randomIndex];
     game.currentGame.currentWord = nextWord;
 
-    io.to(gameCode).emit('game-state-update', game.currentGame);
+    // Emit updated state
+    io.to(gameCode).emit('game-state-update', {
+      currentTeamIndex: game.currentGame.currentTeamIndex,
+      currentRound: game.currentGame.currentRound,
+      scores: game.currentGame.scores,
+      timeRemaining: game.currentGame.timeRemaining,
+      currentWord: game.currentGame.currentWord,
+      currentCategory: game.currentGame.currentCategory,
+      roundWords: game.currentGame.roundWords,
+      teams: game.teams
+    });
   });
 
   // Handle word skipped
@@ -282,19 +332,49 @@ io.on('connection', (socket) => {
     const currentTeam = game.teams[game.currentGame.currentTeamIndex];
     if (socket.id !== currentTeam.id) return;
 
-    // Update scores and words
-    game.currentGame.scores[currentTeam.id] = 
-      Math.max(0, (game.currentGame.scores[currentTeam.id] || 0) - 1);
+    // Update words list (no score penalty for skipping)
     game.currentGame.roundWords.skipped.push(word);
     game.currentGame.usedWords.add(word);
 
-    // Get next word
-    const nextWord = game.currentGame.availableWords.find(w => 
-      !game.currentGame?.usedWords.has(w.word)
+    // Get next word from the same category
+    const currentCategory = game.currentGame.currentCategory;
+    const categoryWords = game.currentGame.availableWords.filter(w => 
+      w.category === currentCategory && !game.currentGame?.usedWords.has(w.word)
     );
+
+    if (categoryWords.length === 0) {
+      console.log('No more words in category, ending turn');
+      endTurn(gameCode);
+      return;
+    }
+
+    // Select random word from remaining category words
+    const randomIndex = Math.floor(Math.random() * categoryWords.length);
+    const nextWord = categoryWords[randomIndex];
     game.currentGame.currentWord = nextWord;
 
-    io.to(gameCode).emit('game-state-update', game.currentGame);
+    // Emit updated state
+    io.to(gameCode).emit('game-state-update', {
+      currentTeamIndex: game.currentGame.currentTeamIndex,
+      currentRound: game.currentGame.currentRound,
+      scores: game.currentGame.scores,
+      timeRemaining: game.currentGame.timeRemaining,
+      currentWord: game.currentGame.currentWord,
+      currentCategory: game.currentGame.currentCategory,
+      roundWords: game.currentGame.roundWords,
+      teams: game.teams
+    });
+  });
+
+  // Move the start-turn handler inside the connection scope
+  socket.on('start-turn', ({ gameCode }) => {
+    const game = games.get(gameCode);
+    if (!game?.currentGame) return;
+
+    const currentTeam = game.teams[game.currentGame.currentTeamIndex];
+    if (socket.id !== currentTeam.id) return;
+
+    startTurn(gameCode);
   });
 
   // Handle disconnection
@@ -314,43 +394,73 @@ io.on('connection', (socket) => {
       }
     }
   });
+
+  // Add handler for end-turn event
+  socket.on('end-turn', ({ gameCode }) => {
+    const game = games.get(gameCode);
+    if (!game?.currentGame) return;
+
+    const currentTeam = game.teams[game.currentGame.currentTeamIndex];
+    if (socket.id !== currentTeam.id) return;
+
+    // Move to next team and prepare their turn
+    game.currentGame.currentTeamIndex = 
+      (game.currentGame.currentTeamIndex + 1) % game.teams.length;
+
+    // Check if round is complete
+    if (game.currentGame.currentTeamIndex === 0) {
+      game.currentGame.currentRound++;
+    }
+
+    // Check if game is over
+    if (game.currentGame.currentRound > game.settings.rounds) {
+      endGame(gameCode);
+    } else {
+      // Prepare for next turn
+      prepareTurn(gameCode);
+    }
+  });
 });
 
 function startTurn(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame || !game.settings) return;
-
-  // Reset turn state with the correct turn duration
-  game.currentGame.timeRemaining = game.settings.turnDuration;
-  game.currentGame.roundWords = { guessed: [], skipped: [] };
-
-  // Get the next word for the turn
-  const nextWord = game.currentGame.availableWords.find(w => 
-    !game.currentGame.usedWords.has(w.word)
-  );
-  game.currentGame.currentWord = nextWord;
-
-  // Clear any existing timer
-  if (game.currentGame.timer) {
-    clearInterval(game.currentGame.timer);
+  if (!game?.currentGame || !game.settings) {
+    console.error('Invalid game state in startTurn:', gameCode);
+    return;
   }
 
-  // Start the timer
-  game.currentGame.timer = setInterval(() => {
-    if (!game.currentGame) return;
+  // Get words for the selected category
+  const categoryWords = game.currentGame.availableWords.filter(word => 
+    word.category === game.currentGame.currentCategory && 
+    !game.currentGame?.usedWords.has(word.word)
+  );
 
-    game.currentGame.timeRemaining--;
-    
-    if (game.currentGame.timeRemaining <= 0) {
-      clearInterval(game.currentGame.timer);
-      endTurn(gameCode);
-    } else {
-      io.to(gameCode).emit('game-state-update', game.currentGame);
-    }
-  }, 1000);
+  if (categoryWords.length === 0) {
+    console.log('No more words available in category, ending game');
+    endGame(gameCode);
+    return;
+  }
 
-  // Emit the updated game state
-  io.to(gameCode).emit('game-state-update', game.currentGame);
+  // Select first word
+  const randomIndex = Math.floor(Math.random() * categoryWords.length);
+  game.currentGame.currentWord = categoryWords[randomIndex];
+
+  console.log('Starting turn with word:', game.currentGame.currentWord.word);
+
+  // Start the timer and emit initial state
+  startTimer(gameCode);
+
+  // Emit turn-started event with initial game state
+  io.to(gameCode).emit('game-state-update', {
+    currentTeamIndex: game.currentGame.currentTeamIndex,
+    currentRound: game.currentGame.currentRound,
+    scores: game.currentGame.scores,
+    timeRemaining: game.currentGame.timeRemaining,
+    currentWord: game.currentGame.currentWord,
+    currentCategory: game.currentGame.currentCategory,
+    roundWords: game.currentGame.roundWords,
+    teams: game.teams
+  });
 }
 
 function endTurn(gameCode: string) {
@@ -361,6 +471,16 @@ function endTurn(gameCode: string) {
   if (game.currentGame.timer) {
     clearInterval(game.currentGame.timer);
   }
+
+  // Emit turn-ended event with summary data
+  io.to(gameCode).emit('turn-ended', {
+    currentTeamIndex: game.currentGame.currentTeamIndex,
+    currentRound: game.currentGame.currentRound,
+    scores: game.currentGame.scores,
+    roundWords: game.currentGame.roundWords,
+    teams: game.teams,
+    lastWord: game.currentGame.currentWord // Include the last word being displayed
+  });
 
   // Move to next team
   game.currentGame.currentTeamIndex = 
@@ -375,7 +495,8 @@ function endTurn(gameCode: string) {
   if (game.currentGame.currentRound > game.settings.rounds) {
     endGame(gameCode);
   } else {
-    startTurn(gameCode);
+    // Instead of starting turn immediately, prepare for next turn
+    prepareTurn(gameCode);
   }
 }
 
@@ -396,6 +517,91 @@ function endGame(gameCode: string) {
 
   // Clean up game
   games.delete(gameCode);
+}
+
+// Update prepareTurn function to properly set up the turn-ready state
+function prepareTurn(gameCode: string) {
+  const game = games.get(gameCode);
+  if (!game?.currentGame) return;
+
+  // Get available categories (those that still have unused words)
+  const availableCategories = game.settings.categories.filter(category => {
+    const categoryWords = game.currentGame!.availableWords.filter(w => 
+      w.category === category && !game.currentGame!.usedWords.has(w.word)
+    );
+    return categoryWords.length > 0;
+  });
+
+  if (availableCategories.length === 0) {
+    console.log('No more words available in any category');
+    endGame(gameCode);
+    return;
+  }
+
+  // Select random category for this turn
+  const randomCategory = availableCategories[Math.floor(Math.random() * availableCategories.length)];
+  game.currentGame.currentCategory = randomCategory;
+
+  // Reset turn state
+  game.currentGame.roundWords = { guessed: [], skipped: [] };
+  game.currentGame.timeRemaining = game.settings.turnDuration;
+  
+  // Clear any existing timer
+  if (game.currentGame.timer) {
+    clearInterval(game.currentGame.timer);
+    game.currentGame.timer = undefined;
+  }
+
+  console.log('Turn ready for team:', game.teams[game.currentGame.currentTeamIndex].name);
+
+  // Emit turn-ready event
+  io.to(gameCode).emit('turn-ready', {
+    currentTeamIndex: game.currentGame.currentTeamIndex,
+    currentRound: game.currentGame.currentRound,
+    currentCategory: randomCategory,
+    scores: game.currentGame.scores,
+    teams: game.teams
+  });
+}
+
+// Add new function to handle the timer separately
+function startTimer(gameCode: string) {
+  const game = games.get(gameCode);
+  if (!game?.currentGame) return;
+
+  // Emit initial state for this turn
+  io.to(gameCode).emit('game-state-update', {
+    currentTeamIndex: game.currentGame.currentTeamIndex,
+    currentRound: game.currentGame.currentRound,
+    scores: game.currentGame.scores,
+    timeRemaining: game.currentGame.timeRemaining,
+    currentWord: game.currentGame.currentWord,
+    currentCategory: game.currentGame.currentCategory,
+    roundWords: game.currentGame.roundWords,
+    teams: game.teams
+  });
+
+  // Start the timer
+  game.currentGame.timer = setInterval(() => {
+    if (!game.currentGame) return;
+
+    game.currentGame.timeRemaining--;
+    
+    // Emit time update
+    io.to(gameCode).emit('game-state-update', {
+      timeRemaining: game.currentGame.timeRemaining,
+      currentWord: game.currentGame.currentWord,
+      currentTeamIndex: game.currentGame.currentTeamIndex,
+      scores: game.currentGame.scores,
+      roundWords: game.currentGame.roundWords
+    });
+
+    // Check if time is up
+    if (game.currentGame.timeRemaining <= 0) {
+      clearInterval(game.currentGame.timer);
+      endTurn(gameCode);
+    }
+  }, 1000);
 }
 
 // Start server
