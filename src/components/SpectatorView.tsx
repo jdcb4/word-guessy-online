@@ -1,70 +1,80 @@
 'use client';
 
-interface SpectatorViewProps {
-  currentGame: any;
-  teams: Array<{ id: string; name: string }>;
-}
+import { useEffect, useState } from 'react';
+import { motion } from "framer-motion";
+import { useSelector } from 'react-redux';
+import { RootState } from '@/store/store';
 
-export function SpectatorView({ currentGame, teams }: SpectatorViewProps) {
-  if (!currentGame) return null;
+export function SpectatorView() {
+  const { currentGame, teams } = useSelector((state: RootState) => state.game);
+  const [timeRemaining, setTimeRemaining] = useState(30);
+  
+  useEffect(() => {
+    if (currentGame?.timeRemaining) {
+      setTimeRemaining(currentGame.timeRemaining);
+    }
+  }, [currentGame?.timeRemaining]);
+
+  if (!currentGame) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl mb-2">Loading game state...</h2>
+        </div>
+      </div>
+    );
+  }
 
   const currentTeam = teams[currentGame.currentTeamIndex];
 
   return (
-    <div className="w-full max-w-md">
-      {/* Current Team */}
-      <div className="text-center mb-8">
-        <div className="text-2xl font-bold mb-2">
-          {currentTeam.name}'s Turn
+    <div className="min-h-screen flex flex-col">
+      <div className="flex-1 overflow-y-auto pb-24">
+        {/* Timer */}
+        <div className="text-center mt-4 mb-8">
+          <div className="inline-block px-4 py-2 rounded-full bg-primary/10 text-primary font-bold">
+            {timeRemaining} seconds
+          </div>
         </div>
-        <div className="text-4xl font-bold mb-2">
-          {currentGame.timeRemaining}
+        
+        <motion.div
+          className="text-center mb-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <h2 className="text-3xl font-bold gradient-heading mb-4">
+            {currentTeam.name}'s Turn
+          </h2>
+          <p className="text-muted-foreground">
+            Category: {currentGame.currentCategory}
+          </p>
+        </motion.div>
+        
+        <div className="bg-muted/50 rounded-lg p-6 mx-4 text-center">
+          <p className="mb-2 text-lg font-medium">
+            {currentTeam.name} is describing a word
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Watch and listen! Your turn will be next.
+          </p>
         </div>
-        <div className="text-foreground/70">seconds remaining</div>
-      </div>
-
-      {/* Scoreboard */}
-      <div className="bg-foreground/5 p-4 rounded-lg mb-8">
-        <h2 className="font-medium mb-4">Scoreboard</h2>
-        <ul className="space-y-2">
-          {teams.map((team) => (
-            <li
-              key={team.id}
-              className="flex justify-between items-center"
-            >
-              <span>{team.name}</span>
-              <span className="font-medium">
-                {currentGame.scores[team.id] || 0}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Round Summary */}
-      <div className="space-y-4">
-        {/* Guessed Words */}
-        <div>
-          <h3 className="font-medium mb-2">Words Guessed This Round</h3>
-          <ul className="bg-foreground/5 rounded-lg divide-y divide-foreground/10">
-            {currentGame.roundWords.guessed.map((word: string) => (
-              <li key={word} className="px-4 py-2 text-foreground/70">
-                {word}
-              </li>
+        
+        {/* Current scores could go here */}
+        <div className="mt-8 px-4">
+          <h3 className="text-xl font-medium mb-4">Current Scores</h3>
+          <div className="space-y-2">
+            {teams.map(team => (
+              <div 
+                key={team.id} 
+                className="flex justify-between items-center p-3 rounded-lg bg-muted/30"
+              >
+                <span className="font-medium">{team.name}</span>
+                <span className="text-muted-foreground">
+                  {currentGame.scores[team.id] || 0} points
+                </span>
+              </div>
             ))}
-          </ul>
-        </div>
-
-        {/* Skipped Words */}
-        <div>
-          <h3 className="font-medium mb-2">Skipped Words</h3>
-          <ul className="bg-foreground/5 rounded-lg divide-y divide-foreground/10">
-            {currentGame.roundWords.skipped.map((word: string) => (
-              <li key={word} className="px-4 py-2 text-foreground/70">
-                {word}
-              </li>
-            ))}
-          </ul>
+          </div>
         </div>
       </div>
     </div>

@@ -1,69 +1,82 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
+import { useSelector } from 'react-redux';
+import { RootState } from '@/store/store';
 import { Button } from './Button';
 
-interface ActiveTeamViewProps {
-  currentGame: any;
-  onCorrectGuess: () => void;
-  onSkip: () => void;
-}
+export function ActiveTeamView() {
+  const { currentWord, currentGame } = useSelector((state: RootState) => state.game);
+  const [timeRemaining, setTimeRemaining] = useState(30);
+  
+  useEffect(() => {
+    if (currentGame?.timeRemaining) {
+      setTimeRemaining(currentGame.timeRemaining);
+    }
+  }, [currentGame?.timeRemaining]);
 
-export function ActiveTeamView({ currentGame, onCorrectGuess, onSkip }: ActiveTeamViewProps) {
-  if (!currentGame) return null;
+  if (!currentWord || !currentGame) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl mb-2">Loading your word...</h2>
+          <p className="text-gray-500">Please wait</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="w-full max-w-md">
-      {/* Timer */}
-      <div className="text-center mb-8">
-        <div className="text-6xl font-bold mb-2">
-          {currentGame.timeRemaining}
+    <div className="min-h-screen flex flex-col">
+      <div className="flex-1 overflow-y-auto pb-24">
+        {/* Timer */}
+        <div className="text-center mt-4 mb-8">
+          <div className="inline-block px-4 py-2 rounded-full bg-primary/10 text-primary font-bold">
+            {timeRemaining} seconds
+          </div>
         </div>
-        <div className="text-foreground/70">seconds remaining</div>
-      </div>
-
-      {/* Current Word */}
-      <div className="bg-foreground/5 p-6 rounded-lg mb-8 text-center">
-        <div className="text-sm text-foreground/70 mb-2">
-          {currentGame.currentWord?.category} - {currentGame.currentWord?.difficulty}
+        
+        <motion.div
+          className="text-center mb-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <p className="text-sm text-muted-foreground mb-2">
+            Your word is:
+          </p>
+          <h2 className="text-4xl font-bold gradient-heading mb-4">
+            {currentWord.word}
+          </h2>
+          <p className="text-muted-foreground">
+            Category: {currentWord.category}
+          </p>
+        </motion.div>
+        
+        <div className="text-center px-4">
+          <p className="mb-6">
+            Describe this word to your team without saying the word itself or any part of it!
+          </p>
         </div>
-        <div className="text-4xl font-bold mb-4">
-          {currentGame.currentWord?.word}
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="grid grid-cols-2 gap-4 mb-8">
-        <Button onClick={onCorrectGuess} variant="success">
-          Correct! (+1)
-        </Button>
-        <Button onClick={onSkip} variant="danger">
-          Skip (-1)
-        </Button>
-      </div>
-
-      {/* Round Summary */}
-      <div className="space-y-4">
-        <div>
-          <h3 className="font-medium mb-2">Guessed Words ({currentGame.roundWords.guessed.length})</h3>
-          <ul className="bg-foreground/5 rounded-lg divide-y divide-foreground/10">
-            {currentGame.roundWords.guessed.map((word: string) => (
-              <li key={word} className="px-4 py-2 text-foreground/70">
-                {word}
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div>
-          <h3 className="font-medium mb-2">Skipped Words ({currentGame.roundWords.skipped.length})</h3>
-          <ul className="bg-foreground/5 rounded-lg divide-y divide-foreground/10">
-            {currentGame.roundWords.skipped.map((word: string) => (
-              <li key={word} className="px-4 py-2 text-foreground/70">
-                {word}
-              </li>
-            ))}
-          </ul>
+        
+        {/* Action Buttons */}
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-sm border-t border-border">
+          <div className="max-w-md mx-auto space-y-2">
+            <Button 
+              variant="primary"
+              size="lg"
+              fullWidth
+            >
+              Got it!
+            </Button>
+            <Button 
+              variant="outline"
+              size="lg"
+              fullWidth
+            >
+              Skip
+            </Button>
+          </div>
         </div>
       </div>
     </div>

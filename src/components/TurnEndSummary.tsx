@@ -1,8 +1,9 @@
 'use client';
 
-import { useSelector } from 'react-redux';
-import { RootState } from '@/store';
+import { motion } from "framer-motion";
 import { Button } from './Button';
+import { RootState } from "@/store/store";
+import { useSelector } from "react-redux";
 
 interface TurnEndSummaryProps {
   onEndTurn: () => void;
@@ -17,52 +18,100 @@ export function TurnEndSummary({ onEndTurn, isActiveTeam }: TurnEndSummaryProps)
   const currentTeam = teams[currentGame.currentTeamIndex];
 
   return (
-    <div className="flex flex-col items-center gap-6 p-4 max-w-md mx-auto">
-      <h2 className="text-2xl font-bold text-center">
-        {currentTeam.name}'s Turn Summary
-      </h2>
+    <div className="min-h-screen flex flex-col">
+      <div className="flex-1 overflow-y-auto pb-24">
+        {/* Turn Summary Header */}
+        <motion.div
+          className="text-center mb-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <h2 className="text-3xl font-bold gradient-heading">
+            {currentTeam.name}'s Turn Summary
+          </h2>
+        </motion.div>
 
-      {/* Score section */}
-      <div className="w-full">
-        <h3 className="text-xl mb-2">Current Scores:</h3>
-        {teams.map(team => (
-          <div key={team.id} className="flex justify-between py-2">
-            <span>{team.name}</span>
-            <span>{currentGame.scores[team.id] || 0} points</span>
+        {/* Score Summary */}
+        <motion.div 
+          className="card mx-4 mb-8"
+          initial={{ scale: 0.95 }}
+          animate={{ scale: 1 }}
+        >
+          <h3 className="text-xl font-medium mb-4">Current Scores</h3>
+          <div className="space-y-2">
+            {teams.map(team => (
+              <div 
+                key={team.id} 
+                className={`flex justify-between items-center p-3 rounded-lg ${
+                  team.id === currentTeam.id ? 'bg-primary/5' : ''
+                }`}
+              >
+                <span className="font-medium">{team.name}</span>
+                <span className="text-muted-foreground">
+                  {currentGame.scores[team.id] || 0} points
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
+        </motion.div>
+
+        {/* Words Summary */}
+        <div className="grid grid-cols-2 gap-4 px-4">
+          {/* Guessed Words */}
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+          >
+            <h3 className="font-medium mb-2">
+              Guessed ({currentGame.roundWords.guessed.length})
+            </h3>
+            <ul className="bg-foreground/5 rounded-lg divide-y divide-foreground/10">
+              {currentGame.roundWords.guessed.map((word: string) => (
+                <li key={word} className="px-3 py-2 text-foreground/70 text-sm">
+                  {word}
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+
+          {/* Skipped Words */}
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+          >
+            <h3 className="font-medium mb-2">
+              Skipped ({currentGame.roundWords.skipped.length})
+            </h3>
+            <ul className="bg-foreground/5 rounded-lg divide-y divide-foreground/10">
+              {currentGame.roundWords.skipped.map((word: string) => (
+                <li key={word} className="px-3 py-2 text-foreground/70 text-sm">
+                  {word}
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        </div>
       </div>
 
-      {/* Words summary */}
-      <div className="w-full space-y-4">
-        <div>
-          <h3 className="text-xl mb-2">Words Guessed:</h3>
-          <ul className="list-disc pl-4">
-            {currentGame.roundWords.guessed.map((word, index) => (
-              <li key={`guessed-${word}-${index}`}>{word}</li>
-            ))}
-          </ul>
-        </div>
-
-        <div>
-          <h3 className="text-xl mb-2">Words Skipped:</h3>
-          <ul className="list-disc pl-4">
-            {currentGame.roundWords.skipped.map((word, index) => (
-              <li key={`skipped-${word}-${index}`}>{word}</li>
-            ))}
-          </ul>
+      {/* Fixed Action Button */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-sm border-t border-border">
+        <div className="max-w-md mx-auto">
+          {isActiveTeam ? (
+            <Button 
+              onClick={onEndTurn} 
+              variant="primary"
+              size="lg"
+              fullWidth
+            >
+              End Turn
+            </Button>
+          ) : (
+            <p className="text-center text-muted-foreground">
+              Waiting for {currentTeam.name} to end their turn...
+            </p>
+          )}
         </div>
       </div>
-
-      {isActiveTeam ? (
-        <Button onClick={onEndTurn} fullWidth>
-          End Turn
-        </Button>
-      ) : (
-        <p className="text-center text-foreground/60">
-          Waiting for {currentTeam.name} to end their turn...
-        </p>
-      )}
     </div>
   );
 } 

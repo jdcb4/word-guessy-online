@@ -15,16 +15,13 @@ app.use(cors());
 // Initialize Socket.io
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: "http://localhost:3000",
     methods: ["GET", "POST"],
-    credentials: true,
-    allowedHeaders: ["*"]
+    credentials: true
   },
-  // Add transport configuration
   transports: ['polling', 'websocket'],
   allowEIO3: true,
   pingTimeout: 60000,
-  pingInterval: 25000
 });
 
 // Store active games
@@ -48,8 +45,14 @@ const games = new Map<string, {
     usedWords: Set<string>;
     availableWords: Word[];
     timer?: NodeJS.Timeout;
+    turnStarted: boolean;
   };
 }>();
+
+// Near the top of the file, add socket ID mapping
+const socketIdMap = new Map<string, string>();
+const reverseSocketIdMap = new Map<string, string>();
+const socketToGameMap = new Map<string, string>();  // Track which game each socket is in
 
 interface GameSettings {
   rounds: number;
@@ -66,7 +69,12 @@ interface GameSettings {
 interface Word {
   word: string;
   category: string;
-  difficulty: 'easy' | 'medium' | 'hard';
+  difficulty: string;
+}
+
+interface Team {
+  id: string;
+  name: string;
 }
 
 interface GameState {
@@ -106,9 +114,66 @@ function generateGameCode(): string {
   return code;
 }
 
+// Add this function to help with socket ID tracking
+function updateSocketId(oldId: string, newId: string) {
+  console.log('Updating socket ID mapping:', { oldId, newId });
+  
+  // Update the maps
+  socketIdMap.set(newId, oldId);
+  reverseSocketIdMap.set(oldId, newId);
+  
+  // Update team IDs in any games this socket is part of
+  const gameCode = socketToGameMap.get(oldId);
+  if (gameCode) {
+    const game = games.get(gameCode);
+    if (game) {
+      const team = game.teams.find((t: any) => t.id === oldId);
+      if (team) {
+        console.log('Updating team ID:', { oldId, newId });
+        team.id = newId;
+      }
+      socketToGameMap.delete(oldId);
+      socketToGameMap.set(newId, gameCode);
+    }
+  }
+}
+
+// Add this helper function to log the current state
+function logGameState(gameCode: string) {
+  const game = games.get(gameCode);
+  console.log('Current game state:', {
+    gameCode,
+    game: {
+      teams: game?.teams,
+      currentGame: game?.currentGame,
+      settings: game?.settings
+    },
+    socketMappings: {
+      socketIdMap: Array.from(socketIdMap.entries()),
+      reverseSocketIdMap: Array.from(reverseSocketIdMap.entries()),
+      socketToGameMap: Array.from(socketToGameMap.entries())
+    }
+  });
+}
+
 // Handle socket connections
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  console.log('New client connected:', socket.id);
+  
+  // Add this to log all events received from this socket
+  socket.onAny((event, ...args) => {
+    console.log(`[${socket.id}] Event received: ${event}`, args);
+  });
+
+  socket.on('register-player', ({ previousId }) => {
+    if (previousId) {
+      console.log('Registering player:', { 
+        currentId: socket.id, 
+        previousId 
+      });
+      updateSocketId(previousId, socket.id);
+    }
+  });
 
   // Handle hosting a new game
   socket.on('host-game', ({ teamName, settings }) => {
@@ -147,11 +212,13 @@ io.on('connection', (socket) => {
       });
       
       console.log('Game creation completed');
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Detailed host-game error:', error);
-      console.error('Error stack:', error.stack);
+      if (error instanceof Error) {
+        console.error('Error stack:', error.stack);
+      }
       socket.emit('error', { 
-        message: 'Failed to create game. Please try again.' 
+        message: 'Failed to create game. Please try again.'
       });
     }
   });
@@ -177,35 +244,65 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle joining a game
-  socket.on('join-game', ({ gameCode, teamName }) => {
-    const game = games.get(gameCode);
-    
-    if (!game) {
-      socket.emit('error', { message: 'Game not found' });
-      return;
-    }
-
-    // Check if game is full
-    if (game.teams.length >= game.settings.teams.maxTeams) {
-      socket.emit('error', { message: 'Game is full' });
-      return;
-    }
-
-    // Add the new team
-    game.teams.push({ id: socket.id, name: teamName });
-    
-    // Join the socket to the game room
-    socket.join(gameCode);
-
-    // Notify all players in the game about the new team
-    io.to(gameCode).emit('game-updated', { 
-      teams: game.teams,
-      settings: game.settings 
+  // Handle joining a team
+  socket.on('join-team', ({ gameCode, teamName }) => {
+    console.log('Join team request:', { 
+      socketId: socket.id, 
+      gameCode, 
+      teamName 
     });
 
-    // Notify the joining player specifically
-    socket.emit('game-joined', { gameCode });
+    try {
+      const game = games.get(gameCode);
+      if (!game) {
+        console.error('Game not found:', gameCode);
+        socket.emit('error', { message: 'Game not found' });
+        return;
+      }
+
+      // Check if game is already in progress
+      if (game.currentGame) {
+        console.error('Cannot join game in progress');
+        socket.emit('error', { message: 'Game already in progress' });
+        return;
+      }
+
+      // Add the team to the game
+      game.teams.push({
+        id: socket.id,
+        name: teamName
+      });
+
+      // Join the socket to the game room
+      socket.join(gameCode);
+      
+      // Map this socket to the game code
+      socketToGameMap.set(socket.id, gameCode);
+
+      // Emit success events
+      socket.emit('game-joined', { 
+        gameCode,
+        teams: game.teams
+      });
+
+      // Broadcast updated game state to all players
+      io.to(gameCode).emit('game-updated', {
+        teams: game.teams,
+        settings: game.settings
+      });
+
+      console.log('Player successfully joined game:', {
+        gameCode,
+        teamName,
+        totalTeams: game.teams.length
+      });
+
+    } catch (error) {
+      console.error('Error joining team:', error);
+      socket.emit('error', { 
+        message: 'Failed to join game. Please try again.' 
+      });
+    }
   });
 
   // Handle starting the game
@@ -232,11 +329,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      console.log('Loading words with settings:', {
-        categories: game.settings.categories,
-        difficulties: game.settings.difficulties
-      });
-
       // Load and organize all available words
       const allWords = getWords({
         categories: game.settings.categories,
@@ -251,14 +343,15 @@ io.on('connection', (socket) => {
         currentRound: 1,
         scores: {},
         timeRemaining: game.settings.turnDuration,
-        currentCategory: '',
+        currentCategory: game.settings.categories[0], // Set initial category
         roundWords: {
           guessed: [],
           skipped: []
         },
         usedWords: new Set(),
         availableWords: allWords,
-        timer: undefined
+        timer: undefined,
+        turnStarted: false
       };
 
       // Initialize scores for all teams
@@ -268,15 +361,128 @@ io.on('connection', (socket) => {
 
       console.log('Game initialized, preparing first turn');
 
-      // Notify all clients that the game has started
+      // Update the broadcast approach for the turn-ready event
+      // First, broadcast game started to everyone
       io.to(gameCode).emit('game-started');
-
-      // Prepare the first turn (this will emit turn-ready event)
-      prepareTurn(gameCode);
+      
+      // Then, broadcast turn-ready to everyone with the active team information
+      io.to(gameCode).emit('turn-ready', {
+        currentTeamIndex: game.currentGame.currentTeamIndex,
+        currentRound: game.currentGame.currentRound,
+        scores: game.currentGame.scores,
+        currentCategory: game.currentGame.currentCategory,
+        teams: game.teams,
+        currentTeam: game.teams[game.currentGame.currentTeamIndex],
+        activeTeamId: game.teams[game.currentGame.currentTeamIndex].id
+      });
+      
+      console.log('Turn ready broadcast complete:', {
+        gameCode,
+        activeTeamId: game.teams[game.currentGame.currentTeamIndex].id,
+        teams: game.teams.map(t => ({ id: t.id, name: t.name }))
+      });
 
     } catch (error) {
       console.error('Error starting game:', error);
       socket.emit('error', { message: 'Failed to start game' });
+    }
+  });
+
+  // Handle starting a turn
+  socket.on('start-turn', ({ gameCode }) => {
+    try {
+      console.log(`Socket ${socket.id} attempting to start turn for game: ${gameCode}`);
+      
+      const game = games.get(gameCode);
+      if (!game?.currentGame) {
+        socket.emit('error', { message: 'Game not found or not started' });
+        return;
+      }
+      
+      const currentTeam = game.teams[game.currentGame.currentTeamIndex];
+      console.log(`Current team: ${currentTeam.name} (${currentTeam.id})`);
+      
+      // Get random word from category
+      const currentCategory = game.currentGame.currentCategory;
+      const categoryWords = game.currentGame.availableWords.filter(w => 
+        w.category === currentCategory && !game.currentGame?.usedWords.has(w.word)
+      );
+      
+      if (categoryWords.length === 0) {
+        console.log('No more words in category, ending turn');
+        endTurn(gameCode);
+        return;
+      }
+      
+      const randomIndex = Math.floor(Math.random() * categoryWords.length);
+      const selectedWord = categoryWords[randomIndex];
+      
+      // Mark this word as used
+      game.currentGame.usedWords.add(selectedWord.word);
+      
+      // Store current word
+      game.currentGame.currentWord = selectedWord;
+      
+      // Start the timer
+      game.currentGame.timeRemaining = game.settings.turnDuration;
+      game.currentGame.turnStarted = true;
+      
+      clearInterval(game.currentGame.timer);
+      game.currentGame.timer = setInterval(() => {
+        if (game.currentGame.timeRemaining <= 0) {
+          clearInterval(game.currentGame.timer);
+          endTurn(gameCode);
+          return;
+        }
+        game.currentGame.timeRemaining -= 1;
+      }, 1000);
+      
+      // Broadcast to everyone that the turn has started
+      io.to(gameCode).emit('turn-started', {
+        currentTeamIndex: game.currentGame.currentTeamIndex,
+        currentRound: game.currentGame.currentRound,
+        scores: game.currentGame.scores,
+        timeRemaining: game.currentGame.timeRemaining,
+        currentCategory: game.currentGame.currentCategory,
+        teams: game.teams,
+        activeTeamId: currentTeam.id
+      });
+      
+      // Find all sockets for the active team and send them the word
+      const activeTeamSockets = [];
+      
+      // Get the socket ID from our mapping
+      const socketId = reverseSocketIdMap.get(currentTeam.id);
+      if (socketId) {
+        const clientSocket = io.sockets.sockets.get(socketId);
+        if (clientSocket) {
+          activeTeamSockets.push(clientSocket);
+        }
+      }
+      
+      // Direct socket ID match (if the team creator is still connected with original socket)
+      const directSocket = io.sockets.sockets.get(currentTeam.id);
+      if (directSocket) {
+        activeTeamSockets.push(directSocket);
+      }
+      
+      // Log what we found
+      console.log(`Found ${activeTeamSockets.length} active team sockets: `, 
+        activeTeamSockets.map(s => s.id));
+      
+      // Send the word only to the active team sockets
+      activeTeamSockets.forEach(teamSocket => {
+        teamSocket.emit('word-to-guess', {
+          word: selectedWord.word,
+          category: selectedWord.category
+        });
+        console.log(`Sent word to socket: ${teamSocket.id}`);
+      });
+      
+      console.log(`Turn started for team ${currentTeam.name} with word: ${selectedWord.word}`);
+    } catch (error) {
+      console.error('Error starting turn:', error);
+      socket.emit('error', { message: 'Failed to start turn' });
     }
   });
 
@@ -366,17 +572,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Move the start-turn handler inside the connection scope
-  socket.on('start-turn', ({ gameCode }) => {
-    const game = games.get(gameCode);
-    if (!game?.currentGame) return;
-
-    const currentTeam = game.teams[game.currentGame.currentTeamIndex];
-    if (socket.id !== currentTeam.id) return;
-
-    startTurn(gameCode);
-  });
-
   // Handle disconnection
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
@@ -418,6 +613,133 @@ io.on('connection', (socket) => {
     } else {
       // Prepare for next turn
       prepareTurn(gameCode);
+    }
+  });
+
+  // Modify the join-room handler to explicitly map socket IDs to teams
+  socket.on('join-room', ({ gameCode }) => {
+    console.log(`Socket ${socket.id} joining room for game: ${gameCode}`);
+    
+    const game = games.get(gameCode);
+    if (!game) {
+      console.error('Game not found for room join:', gameCode);
+      socket.emit('error', { message: 'Game not found' });
+      return;
+    }
+    
+    // Join the socket to the game room
+    socket.join(gameCode);
+    
+    // Find if this socket belongs to a team
+    let matchedTeam = game.teams.find(team => 
+      team.id === socket.id || 
+      socketIdMap.get(socket.id) === team.id ||
+      reverseSocketIdMap.get(team.id) === socket.id
+    );
+    
+    if (matchedTeam) {
+      console.log(`Socket ${socket.id} identified as team ${matchedTeam.name} (${matchedTeam.id})`);
+      
+      // Update the mapping
+      if (matchedTeam.id !== socket.id) {
+        console.log(`Updating socket ID map for reconnection: ${matchedTeam.id} -> ${socket.id}`);
+        reverseSocketIdMap.set(matchedTeam.id, socket.id);
+        socketIdMap.set(socket.id, matchedTeam.id);
+      }
+    } else {
+      console.log(`Socket ${socket.id} not matched to any team in game ${gameCode}`);
+    }
+    
+    console.log(`Socket ${socket.id} joined room ${gameCode}`);
+    
+    // If game is already in progress, send current state
+    if (game.currentGame) {
+      const currentTeamId = game.teams[game.currentGame.currentTeamIndex]?.id;
+      const isActiveTeam = matchedTeam && matchedTeam.id === currentTeamId;
+      
+      console.log('Sending game state on room join:', {
+        socketId: socket.id,
+        gameCode,
+        matchedTeam: matchedTeam?.name,
+        isActiveTeam,
+        gamePhase: game.currentGame.turnStarted ? 'turn-active' : 'turn-ready'
+      });
+      
+      // Send appropriate game state based on current phase
+      if (game.currentGame.turnStarted) {
+        // Turn is active
+        socket.emit('turn-started', {
+          currentTeamIndex: game.currentGame.currentTeamIndex,
+          currentRound: game.currentGame.currentRound,
+          scores: game.currentGame.scores,
+          currentCategory: game.currentGame.currentCategory,
+          teams: game.teams,
+          currentTeam: game.teams[game.currentGame.currentTeamIndex],
+          isMyTurn: isActiveTeam
+        });
+        
+        // If this is the active team, also send them the current word
+        if (isActiveTeam && game.currentGame.currentWord) {
+          socket.emit('word-to-guess', {
+            word: game.currentGame.currentWord.word,
+            category: game.currentGame.currentWord.category
+          });
+        }
+      } else {
+        // Turn is ready to start
+        socket.emit('turn-ready', {
+          currentTeamIndex: game.currentGame.currentTeamIndex,
+          currentRound: game.currentGame.currentRound,
+          scores: game.currentGame.scores,
+          currentCategory: game.currentGame.currentCategory,
+          teams: game.teams,
+          currentTeam: game.teams[game.currentGame.currentTeamIndex],
+          activeTeamId: currentTeamId,
+          isMyTurn: isActiveTeam
+        });
+      }
+    } else {
+      // Game not started yet, send waiting state
+      socket.emit('game-updated', {
+        teams: game.teams,
+        settings: game.settings
+      });
+    }
+  });
+
+  // Add this handler near your other socket handlers
+  socket.on('join-game', ({ gameCode, teamName }) => {
+    // Simply redirect to join-team handler to avoid duplicate code
+    socket.emit('join-team', { gameCode, teamName });
+  });
+
+  // Add this after line 390 (right after the start-game handler)
+  socket.on('identify-team', ({ gameCode, teamId, teamName }) => {
+    console.log(`Socket ${socket.id} identifying as team ${teamName} (${teamId}) in game ${gameCode}`);
+    
+    const game = games.get(gameCode);
+    if (!game) {
+      console.error('Game not found for team identification');
+      return;
+    }
+    
+    // Verify this is a valid team in the game
+    const team = game.teams.find(t => t.id === teamId && t.name === teamName);
+    if (team) {
+      console.log(`Valid team identification: ${teamName} (${teamId})`);
+      
+      // Update the socket ID mappings
+      socketIdMap.set(socket.id, teamId);
+      reverseSocketIdMap.set(teamId, socket.id);
+      
+      console.log('Updated socket mappings:', {
+        socketToTeam: Array.from(socketIdMap.entries())
+          .filter(([key, value]) => key === socket.id || value === teamId),
+        teamToSocket: Array.from(reverseSocketIdMap.entries())
+          .filter(([key, value]) => key === teamId || value === socket.id)
+      });
+    } else {
+      console.error(`Invalid team identification attempt: ${teamName} (${teamId})`);
     }
   });
 });
@@ -542,24 +864,20 @@ function prepareTurn(gameCode: string) {
   const randomCategory = availableCategories[Math.floor(Math.random() * availableCategories.length)];
   game.currentGame.currentCategory = randomCategory;
 
-  // Reset turn state
-  game.currentGame.roundWords = { guessed: [], skipped: [] };
+  // Initialize turn state
   game.currentGame.timeRemaining = game.settings.turnDuration;
-  
-  // Clear any existing timer
-  if (game.currentGame.timer) {
-    clearInterval(game.currentGame.timer);
-    game.currentGame.timer = undefined;
-  }
+  game.currentGame.roundWords = {
+    guessed: [],
+    skipped: []
+  };
+  game.currentGame.currentWord = null as unknown as Word;
 
-  console.log('Turn ready for team:', game.teams[game.currentGame.currentTeamIndex].name);
-
-  // Emit turn-ready event
+  // Emit turn-ready event with game state
   io.to(gameCode).emit('turn-ready', {
     currentTeamIndex: game.currentGame.currentTeamIndex,
     currentRound: game.currentGame.currentRound,
-    currentCategory: randomCategory,
     scores: game.currentGame.scores,
+    currentCategory: game.currentGame.currentCategory,
     teams: game.teams
   });
 }
@@ -569,31 +887,26 @@ function startTimer(gameCode: string) {
   const game = games.get(gameCode);
   if (!game?.currentGame) return;
 
-  // Emit initial state for this turn
-  io.to(gameCode).emit('game-state-update', {
-    currentTeamIndex: game.currentGame.currentTeamIndex,
-    currentRound: game.currentGame.currentRound,
-    scores: game.currentGame.scores,
-    timeRemaining: game.currentGame.timeRemaining,
-    currentWord: game.currentGame.currentWord,
-    currentCategory: game.currentGame.currentCategory,
-    roundWords: game.currentGame.roundWords,
-    teams: game.teams
-  });
+  // Clear any existing timer
+  if (game.currentGame.timer) {
+    clearInterval(game.currentGame.timer);
+  }
 
-  // Start the timer
   game.currentGame.timer = setInterval(() => {
     if (!game.currentGame) return;
 
     game.currentGame.timeRemaining--;
-    
+
     // Emit time update
     io.to(gameCode).emit('game-state-update', {
+      currentTeamIndex: game.currentGame.currentTeamIndex,
+      currentRound: game.currentGame.currentRound,
+      scores: game.currentGame.scores,
       timeRemaining: game.currentGame.timeRemaining,
       currentWord: game.currentGame.currentWord,
-      currentTeamIndex: game.currentGame.currentTeamIndex,
-      scores: game.currentGame.scores,
-      roundWords: game.currentGame.roundWords
+      currentCategory: game.currentGame.currentCategory,
+      roundWords: game.currentGame.roundWords,
+      teams: game.teams
     });
 
     // Check if time is up

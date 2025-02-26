@@ -1,14 +1,12 @@
-import type { Metadata } from "next";
+'use client';
+
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from './providers';
+import { Provider } from 'react-redux';
+import { store } from '@/store/store';
 
 const inter = Inter({ subsets: ["latin"] });
-
-export const metadata: Metadata = {
-  title: "Word Guessy Online",
-  description: "A multiplayer word guessing game",
-};
 
 export default function RootLayout({
   children,
@@ -18,9 +16,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <Providers>
-          {children}
-        </Providers>
+        <Provider store={store}>
+          <Providers>
+            {children}
+          </Providers>
+        </Provider>
       </body>
     </html>
   );

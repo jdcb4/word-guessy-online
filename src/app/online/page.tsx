@@ -154,7 +154,8 @@ export default function OnlineSetup() {
     setError(null);
     const socket = socketService.getSocket();
     const upperGameCode = gameCode.trim().toUpperCase();
-    socket.emit('join-game', {
+    
+    socket.emit('join-team', {
       gameCode: upperGameCode,
       teamName: teamName.trim()
     });
