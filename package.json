@@ -6,8 +6,8 @@
     "node": "18.x"
   },
   "scripts": {
-    "dev": "node server.js",
-    "build": "next build",
+    "dev": "next dev",
+    "build": "tsc --project tsconfig.production.json && next build",
     "start": "cross-env NODE_ENV=production node server.js",
     "lint": "next lint",
     "server": "tsx watch server/index.ts"
