@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
-import { Server } from 'socket.io';
+import { Server as SocketServer } from 'socket.io';
 import cors from 'cors';
 import { getWords, shuffleWords } from './utils/wordUtils';
 import { clearInterval } from 'timers';
@@ -13,15 +13,11 @@ const httpServer = createServer(app);
 app.use(cors());
 
 // Initialize Socket.io
-const io = new Server(httpServer, {
+const io = new SocketServer(httpServer, {
   cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"],
-    credentials: true
-  },
-  transports: ['polling', 'websocket'],
-  allowEIO3: true,
-  pingTimeout: 60000,
+    origin: process.env.CLIENT_URL || "*",
+    methods: ["GET", "POST"]
+  }
 });
 
 // Store active games
@@ -157,7 +153,7 @@ function logGameState(gameCode: string) {
 }
 
 // Add this function near the other helper functions at the top of the file
-function mapTeamToSocket(teamId, socketId, gameCode) {
+function mapTeamToSocket(teamId: string, socketId: string, gameCode: string) {
   console.log(`Mapping team ${teamId} to socket ${socketId} in game ${gameCode}`);
   
   // Set both directions of mapping
@@ -1016,6 +1012,20 @@ function startTimer(gameCode: string) {
       endTurn(gameCode);
     }
   }, 1000);
+}
+
+// Export a function that takes an HTTP server and sets up Socket.IO
+export default function setupSocketServer(httpServer: createServer) {
+  // Initialize Socket.IO with CORS settings
+  const io = new SocketServer(httpServer, {
+    cors: {
+      origin: process.env.CLIENT_URL || "*",
+      methods: ["GET", "POST"]
+    }
+  });
+  
+  // Rest of your Socket.IO code remains the same
+  // ...
 }
 
 // Start server
