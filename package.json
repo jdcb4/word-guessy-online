@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   },
   "scripts": {
     "dev": "node server.js",
     "build": "next build",
-    "start": "NODE_ENV=production node server.js",
+    "start": "cross-env NODE_ENV=production node server.js",
     "lint": "next lint",
     "server": "tsx watch server/index.ts"
   },
@@ -27,7 +27,8 @@
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "tailwind-merge": "^3.0.2",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "cross-env": "^7.0.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

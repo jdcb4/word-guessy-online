@@ -427,7 +427,8 @@ io.on('connection', (socket) => {
       console.log(`Socket ${socket.id} attempting to start turn for game: ${gameCode}`);
       
       const game = games.get(gameCode);
-      if (!game?.currentGame) {
+      if (!game || !game.currentGame) {
+        console.error('Game or currentGame not found:', gameCode);
         socket.emit('error', { message: 'Game not found or not started' });
         return;
       }
@@ -465,7 +466,7 @@ io.on('connection', (socket) => {
       const availableWords = game.currentGame.availableWords.filter(
         word => !game.currentGame.usedWords.has(word.word) && 
                 word.category === game.currentGame.currentCategory
-      );
+      ) || [];
       
       if (availableWords.length === 0) {
         console.error('No more words available!');
@@ -568,7 +569,7 @@ io.on('connection', (socket) => {
   // Handle word guessed correctly
   socket.on('word-guessed', ({ gameCode, word }) => {
     const game = games.get(gameCode);
-    if (!game?.currentGame) return;
+    if (!game || !game.currentGame) return;
 
     const currentTeam = game.teams[game.currentGame.currentTeamIndex];
     if (socket.id !== currentTeam.id) return;
@@ -612,7 +613,7 @@ io.on('connection', (socket) => {
   // Handle word skipped
   socket.on('word-skipped', ({ gameCode, word }) => {
     const game = games.get(gameCode);
-    if (!game?.currentGame) return;
+    if (!game || !game.currentGame) return;
 
     const currentTeam = game.teams[game.currentGame.currentTeamIndex];
     if (socket.id !== currentTeam.id) return;
@@ -672,7 +673,7 @@ io.on('connection', (socket) => {
   // Add handler for end-turn event
   socket.on('end-turn', ({ gameCode }) => {
     const game = games.get(gameCode);
-    if (!game?.currentGame) return;
+    if (!game || !game.currentGame) return;
 
     const currentTeam = game.teams[game.currentGame.currentTeamIndex];
     if (socket.id !== currentTeam.id) return;
@@ -842,7 +843,7 @@ io.on('connection', (socket) => {
 
 function startTurn(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame || !game.settings) {
+  if (!game || !game.currentGame || !game.settings) {
     console.error('Invalid game state in startTurn:', gameCode);
     return;
   }
@@ -883,7 +884,7 @@ function startTurn(gameCode: string) {
 
 function endTurn(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame) return;
+  if (!game || !game.currentGame) return;
 
   // Clear timer
   if (game.currentGame.timer) {
@@ -920,7 +921,7 @@ function endTurn(gameCode: string) {
 
 function endGame(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame) return;
+  if (!game || !game.currentGame) return;
 
   // Find winner
   const winner = Object.entries(game.currentGame.scores)
@@ -942,7 +943,7 @@ function prepareTurn(gameCode: string) {
   console.log(`Preparing turn for game: ${gameCode}`);
   
   const game = games.get(gameCode);
-  if (!game?.currentGame) {
+  if (!game || !game.currentGame) {
     console.error('Game not found or not initialized');
     return;
   }
@@ -982,7 +983,7 @@ function prepareTurn(gameCode: string) {
 // Add new function to handle the timer separately
 function startTimer(gameCode: string) {
   const game = games.get(gameCode);
-  if (!game?.currentGame) return;
+  if (!game || !game.currentGame) return;
 
   // Clear any existing timer
   if (game.currentGame.timer) {
