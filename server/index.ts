@@ -433,7 +433,10 @@ io.on('connection', (socket) => {
         return;
       }
       
-      const currentTeam = game.teams[game.currentGame.currentTeamIndex];
+      // Store a reference to currentGame
+      const currentGame = game.currentGame;
+      
+      const currentTeam = game.teams[currentGame.currentTeamIndex];
       console.log(`Current team: ${currentTeam.name} (${currentTeam.id})`);
       
       // Comprehensive check if this socket belongs to the active team
@@ -463,9 +466,9 @@ io.on('connection', (socket) => {
       console.log(`Valid start turn request from active team: ${currentTeam.name}`);
       
       // Select a random word
-      const availableWords = game.currentGame.availableWords.filter(
-        word => !game.currentGame.usedWords.has(word.word) && 
-                word.category === game.currentGame.currentCategory
+      const availableWords = currentGame.availableWords.filter(
+        word => !currentGame.usedWords.has(word.word) && 
+                word.category === currentGame.currentCategory
       ) || [];
       
       if (availableWords.length === 0) {
@@ -478,26 +481,29 @@ io.on('connection', (socket) => {
       const selectedWord = availableWords[randomIndex];
       
       // Mark this word as used
-      game.currentGame.usedWords.add(selectedWord.word);
-      game.currentGame.currentWord = selectedWord;
-      game.currentGame.timeRemaining = game.settings.turnDuration;
-      game.currentGame.turnStarted = true;
+      currentGame.usedWords.add(selectedWord.word);
+      currentGame.currentWord = selectedWord;
+      currentGame.timeRemaining = game.settings.turnDuration;
+      currentGame.turnStarted = true;
       
       // Set timer for turn
-      if (game.currentGame.timer) {
-        clearInterval(game.currentGame.timer);
+      if (currentGame.timer) {
+        clearInterval(currentGame.timer);
       }
-      game.currentGame.timer = setInterval(() => {
-        if (!game.currentGame) {
-          clearInterval(game.currentGame?.timer);
+      currentGame.timer = setInterval(() => {
+        // We need to re-check the game state here
+        const gameCheck = games.get(gameCode);
+        if (!gameCheck || !gameCheck.currentGame) {
+          clearInterval(currentGame.timer);
           return;
         }
-        if (game.currentGame.timeRemaining <= 0) {
-          clearInterval(game.currentGame.timer);
+        
+        if (gameCheck.currentGame.timeRemaining <= 0) {
+          clearInterval(gameCheck.currentGame.timer);
           endTurn(gameCode);
           return;
         }
-        game.currentGame.timeRemaining -= 1;
+        gameCheck.currentGame.timeRemaining -= 1;
       }, 1000);
       
       // Broadcast to everyone that the turn has started
@@ -854,10 +860,13 @@ function startTurn(gameCode: string) {
     return;
   }
 
+  // Store a reference to currentGame
+  const currentGame = game.currentGame;
+
   // Get words for the selected category
-  const categoryWords = game.currentGame.availableWords.filter(word => 
-    word.category === game.currentGame.currentCategory && 
-    !game.currentGame.usedWords.has(word.word)
+  const categoryWords = currentGame.availableWords.filter(word => 
+    word.category === currentGame.currentCategory && 
+    !currentGame.usedWords.has(word.word)
   );
 
   if (categoryWords.length === 0) {
@@ -868,22 +877,22 @@ function startTurn(gameCode: string) {
 
   // Select first word
   const randomIndex = Math.floor(Math.random() * categoryWords.length);
-  game.currentGame.currentWord = categoryWords[randomIndex];
+  currentGame.currentWord = categoryWords[randomIndex];
 
-  console.log('Starting turn with word:', game.currentGame.currentWord.word);
+  console.log('Starting turn with word:', currentGame.currentWord.word);
 
   // Start the timer and emit initial state
   startTimer(gameCode);
 
   // Emit turn-started event with initial game state
   io.to(gameCode).emit('game-state-update', {
-    currentTeamIndex: game.currentGame.currentTeamIndex,
-    currentRound: game.currentGame.currentRound,
-    scores: game.currentGame.scores,
-    timeRemaining: game.currentGame.timeRemaining,
-    currentWord: game.currentGame.currentWord,
-    currentCategory: game.currentGame.currentCategory,
-    roundWords: game.currentGame.roundWords,
+    currentTeamIndex: currentGame.currentTeamIndex,
+    currentRound: currentGame.currentRound,
+    scores: currentGame.scores,
+    timeRemaining: currentGame.timeRemaining,
+    currentWord: currentGame.currentWord,
+    currentCategory: currentGame.currentCategory,
+    roundWords: currentGame.roundWords,
     teams: game.teams
   });
 }
