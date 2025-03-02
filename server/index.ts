@@ -484,8 +484,14 @@ io.on('connection', (socket) => {
       game.currentGame.turnStarted = true;
       
       // Set timer for turn
-      clearInterval(game.currentGame.timer);
+      if (game.currentGame.timer) {
+        clearInterval(game.currentGame.timer);
+      }
       game.currentGame.timer = setInterval(() => {
+        if (!game.currentGame) {
+          clearInterval(game.currentGame?.timer);
+          return;
+        }
         if (game.currentGame.timeRemaining <= 0) {
           clearInterval(game.currentGame.timer);
           endTurn(gameCode);
@@ -851,7 +857,7 @@ function startTurn(gameCode: string) {
   // Get words for the selected category
   const categoryWords = game.currentGame.availableWords.filter(word => 
     word.category === game.currentGame.currentCategory && 
-    !game.currentGame?.usedWords.has(word.word)
+    !game.currentGame.usedWords.has(word.word)
   );
 
   if (categoryWords.length === 0) {
@@ -953,7 +959,7 @@ function prepareTurn(gameCode: string) {
     guessed: [],
     skipped: []
   };
-  game.currentGame.currentWord = null;
+  game.currentGame.currentWord = undefined;
   game.currentGame.turnStarted = false;
   
   // Log the current active team
@@ -1016,7 +1022,7 @@ function startTimer(gameCode: string) {
 }
 
 // Export a function that takes an HTTP server and sets up Socket.IO
-export default function setupSocketServer(httpServer: createServer) {
+export default function setupSocketServer(httpServer: typeof createServer) {
   // Initialize Socket.IO with CORS settings
   const io = new SocketServer(httpServer, {
     cors: {
