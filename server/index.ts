@@ -156,6 +156,26 @@ function logGameState(gameCode: string) {
   });
 }
 
+// Add this function near the other helper functions at the top of the file
+function mapTeamToSocket(teamId, socketId, gameCode) {
+  console.log(`Mapping team ${teamId} to socket ${socketId} in game ${gameCode}`);
+  
+  // Set both directions of mapping
+  socketIdMap.set(socketId, teamId);
+  reverseSocketIdMap.set(teamId, socketId);
+  
+  // Also store the game code mapping
+  socketToGameMap.set(socketId, gameCode);
+  
+  // Log the current mappings for this team/socket
+  console.log('Socket-team mappings updated:', {
+    socketToTeam: Array.from(socketIdMap.entries())
+      .filter(([key, value]) => key === socketId || value === teamId),
+    teamToSocket: Array.from(reverseSocketIdMap.entries())
+      .filter(([key, value]) => key === teamId || value === socketId)
+  });
+}
+
 // Handle socket connections
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
@@ -226,8 +246,19 @@ io.on('connection', (socket) => {
   // Handle getting game state
   socket.on('get-game-state', ({ gameCode }) => {
     const game = games.get(gameCode);
-    if (!game?.currentGame) {
-      socket.emit('error', { message: 'Game not found' });
+    if (!game) {
+      console.error('Game not found for state request:', gameCode);
+      // socket.emit('error', { message: 'Game not found' });
+      return;
+    }
+
+    if (!game.currentGame) {
+      // This is not actually an error - the game exists but hasn't started yet
+      console.log('Game exists but not started yet:', gameCode);
+      socket.emit('game-updated', {
+        teams: game.teams,
+        settings: game.settings
+      });
       return;
     }
 
@@ -267,21 +298,27 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Add the team to the game
-      game.teams.push({
-        id: socket.id,
+      // Create the team object
+      const teamId = socket.id;
+      const team = {
+        id: teamId,
         name: teamName
-      });
+      };
+      
+      // Add the team to the game
+      game.teams.push(team);
 
       // Join the socket to the game room
       socket.join(gameCode);
       
-      // Map this socket to the game code
-      socketToGameMap.set(socket.id, gameCode);
+      // Map this socket to the team ID and game code
+      mapTeamToSocket(teamId, socket.id, gameCode);
 
       // Emit success events
       socket.emit('game-joined', { 
         gameCode,
+        teamId: teamId,  // Send the team ID back to the client
+        teamName: teamName,
         teams: game.teams
       });
 
@@ -402,31 +439,54 @@ io.on('connection', (socket) => {
       const currentTeam = game.teams[game.currentGame.currentTeamIndex];
       console.log(`Current team: ${currentTeam.name} (${currentTeam.id})`);
       
-      // Get random word from category
-      const currentCategory = game.currentGame.currentCategory;
-      const categoryWords = game.currentGame.availableWords.filter(w => 
-        w.category === currentCategory && !game.currentGame?.usedWords.has(w.word)
-      );
+      // Comprehensive check if this socket belongs to the active team
+      const isActiveTeam = 
+        // Direct match (socket ID is the team ID)
+        currentTeam.id === socket.id || 
+        // Socket is mapped to the team ID
+        socketIdMap.get(socket.id) === currentTeam.id ||
+        // Team ID is mapped to this socket
+        reverseSocketIdMap.get(currentTeam.id) === socket.id;
       
-      if (categoryWords.length === 0) {
-        console.log('No more words in category, ending turn');
-        endTurn(gameCode);
+      console.log(`Start turn request validation:`, { 
+        socketId: socket.id,
+        teamId: currentTeam.id,
+        mappedTeamId: socketIdMap.get(socket.id),
+        teamSocketId: reverseSocketIdMap.get(currentTeam.id),
+        isActiveTeam
+      });
+      
+      if (!isActiveTeam) {
+        console.warn('Attempt to start turn from non-active team');
+        socket.emit('error', { message: 'Not your turn' });
         return;
       }
       
-      const randomIndex = Math.floor(Math.random() * categoryWords.length);
-      const selectedWord = categoryWords[randomIndex];
+      // If we got here, this is the active team
+      console.log(`Valid start turn request from active team: ${currentTeam.name}`);
+      
+      // Select a random word
+      const availableWords = game.currentGame.availableWords.filter(
+        word => !game.currentGame.usedWords.has(word.word) && 
+                word.category === game.currentGame.currentCategory
+      );
+      
+      if (availableWords.length === 0) {
+        console.error('No more words available!');
+        socket.emit('error', { message: 'No more words available' });
+        return;
+      }
+      
+      const randomIndex = Math.floor(Math.random() * availableWords.length);
+      const selectedWord = availableWords[randomIndex];
       
       // Mark this word as used
       game.currentGame.usedWords.add(selectedWord.word);
-      
-      // Store current word
       game.currentGame.currentWord = selectedWord;
-      
-      // Start the timer
       game.currentGame.timeRemaining = game.settings.turnDuration;
       game.currentGame.turnStarted = true;
       
+      // Set timer for turn
       clearInterval(game.currentGame.timer);
       game.currentGame.timer = setInterval(() => {
         if (game.currentGame.timeRemaining <= 0) {
@@ -448,36 +508,59 @@ io.on('connection', (socket) => {
         activeTeamId: currentTeam.id
       });
       
-      // Find all sockets for the active team and send them the word
+      // Find ALL sockets that might belong to the active team
       const activeTeamSockets = [];
       
-      // Get the socket ID from our mapping
+      // Check if we have a direct mapping
       const socketId = reverseSocketIdMap.get(currentTeam.id);
       if (socketId) {
         const clientSocket = io.sockets.sockets.get(socketId);
         if (clientSocket) {
           activeTeamSockets.push(clientSocket);
+          console.log(`Found active team socket via mapping: ${socketId}`);
         }
       }
       
-      // Direct socket ID match (if the team creator is still connected with original socket)
+      // Also check if the team ID is directly a socket ID (original scenario)
       const directSocket = io.sockets.sockets.get(currentTeam.id);
       if (directSocket) {
-        activeTeamSockets.push(directSocket);
+        if (!activeTeamSockets.find(s => s.id === directSocket.id)) {
+          activeTeamSockets.push(directSocket);
+          console.log(`Found active team socket via direct ID: ${directSocket.id}`);
+        }
+      }
+      
+      // If no sockets found yet, try getting all sockets in the room and check their mappings
+      if (activeTeamSockets.length === 0) {
+        console.log('No direct mappings found, checking all sockets in the room');
+        const roomSockets = io.sockets.adapter.rooms.get(gameCode);
+        if (roomSockets) {
+          for (const socketId of roomSockets) {
+            const clientSocket = io.sockets.sockets.get(socketId);
+            if (clientSocket && socketIdMap.get(socketId) === currentTeam.id) {
+              activeTeamSockets.push(clientSocket);
+              console.log(`Found active team socket via room check: ${socketId}`);
+            }
+          }
+        }
       }
       
       // Log what we found
-      console.log(`Found ${activeTeamSockets.length} active team sockets: `, 
+      console.log(`Found ${activeTeamSockets.length} active team sockets:`, 
         activeTeamSockets.map(s => s.id));
       
       // Send the word only to the active team sockets
-      activeTeamSockets.forEach(teamSocket => {
-        teamSocket.emit('word-to-guess', {
-          word: selectedWord.word,
-          category: selectedWord.category
+      if (activeTeamSockets.length > 0) {
+        activeTeamSockets.forEach(teamSocket => {
+          teamSocket.emit('word-to-guess', {
+            word: selectedWord.word,
+            category: selectedWord.category
+          });
+          console.log(`Sent word "${selectedWord.word}" to socket: ${teamSocket.id}`);
         });
-        console.log(`Sent word to socket: ${teamSocket.id}`);
-      });
+      } else {
+        console.warn('No active team sockets found to send the word to!');
+      }
       
       console.log(`Turn started for team ${currentTeam.name} with word: ${selectedWord.word}`);
     } catch (error) {
@@ -623,34 +706,19 @@ io.on('connection', (socket) => {
     const game = games.get(gameCode);
     if (!game) {
       console.error('Game not found for room join:', gameCode);
-      socket.emit('error', { message: 'Game not found' });
+      // Don't emit an error here since this might be a reconnection attempt
+      // socket.emit('error', { message: 'Game not found' });
       return;
     }
     
     // Join the socket to the game room
     socket.join(gameCode);
     
-    // Find if this socket belongs to a team
-    let matchedTeam = game.teams.find(team => 
-      team.id === socket.id || 
-      socketIdMap.get(socket.id) === team.id ||
-      reverseSocketIdMap.get(team.id) === socket.id
-    );
+    // Map this socket to the game code
+    socketToGameMap.set(socket.id, gameCode);
     
-    if (matchedTeam) {
-      console.log(`Socket ${socket.id} identified as team ${matchedTeam.name} (${matchedTeam.id})`);
-      
-      // Update the mapping
-      if (matchedTeam.id !== socket.id) {
-        console.log(`Updating socket ID map for reconnection: ${matchedTeam.id} -> ${socket.id}`);
-        reverseSocketIdMap.set(matchedTeam.id, socket.id);
-        socketIdMap.set(socket.id, matchedTeam.id);
-      }
-    } else {
-      console.log(`Socket ${socket.id} not matched to any team in game ${gameCode}`);
-    }
-    
-    console.log(`Socket ${socket.id} joined room ${gameCode}`);
+    // Try to find which team this socket belongs to
+    const matchedTeam = game.teams.find(t => t.id === socket.id);
     
     // If game is already in progress, send current state
     if (game.currentGame) {
@@ -713,33 +781,65 @@ io.on('connection', (socket) => {
     socket.emit('join-team', { gameCode, teamName });
   });
 
-  // Add this after line 390 (right after the start-game handler)
+  // Update the identify-team handler to be more robust
   socket.on('identify-team', ({ gameCode, teamId, teamName }) => {
-    console.log(`Socket ${socket.id} identifying as team ${teamName} (${teamId}) in game ${gameCode}`);
-    
-    const game = games.get(gameCode);
-    if (!game) {
-      console.error('Game not found for team identification');
-      return;
-    }
-    
-    // Verify this is a valid team in the game
-    const team = game.teams.find(t => t.id === teamId && t.name === teamName);
-    if (team) {
-      console.log(`Valid team identification: ${teamName} (${teamId})`);
+    try {
+      console.log(`Socket ${socket.id} identifying as team:`, { teamId, teamName, gameCode });
       
-      // Update the socket ID mappings
-      socketIdMap.set(socket.id, teamId);
-      reverseSocketIdMap.set(teamId, socket.id);
+      const game = games.get(gameCode);
+      if (!game) {
+        console.log('Game not found for team identification');
+        return;
+      }
       
-      console.log('Updated socket mappings:', {
-        socketToTeam: Array.from(socketIdMap.entries())
-          .filter(([key, value]) => key === socket.id || value === teamId),
-        teamToSocket: Array.from(reverseSocketIdMap.entries())
-          .filter(([key, value]) => key === teamId || value === socket.id)
+      // Find the team - try multiple ways to match
+      let team = game.teams.find(t => {
+        // First try ID match
+        if (teamId && t.id === teamId) {
+          console.log(`Found team by ID match: ${t.name} (${t.id})`);
+          return true;
+        }
+        
+        // Then try name match
+        if (teamName && t.name === teamName) {
+          console.log(`Found team by name match: ${t.name} (${t.id})`);
+          return true;
+        }
+        
+        return false;
       });
-    } else {
-      console.error(`Invalid team identification attempt: ${teamName} (${teamId})`);
+      
+      if (team) {
+        // Map this socket to the team
+        mapTeamToSocket(team.id, socket.id, gameCode);
+        
+        // Send confirmation back to client
+        socket.emit('team-identified', {
+          teamId: team.id,
+          teamName: team.name
+        });
+        
+        // If this is the currently active team, send them special data
+        if (game.currentGame) {
+          const currentTeamIndex = game.currentGame.currentTeamIndex;
+          if (game.teams[currentTeamIndex].id === team.id) {
+            console.log(`Identified socket belongs to active team!`);
+            
+            // If turn is already started, send them the current word
+            if (game.currentGame.turnStarted && game.currentGame.currentWord) {
+              console.log(`Sending current word to identified active team socket`);
+              socket.emit('word-to-guess', {
+                word: game.currentGame.currentWord.word,
+                category: game.currentGame.currentWord.category
+              });
+            }
+          }
+        }
+      } else {
+        console.log(`No matching team found for: ${teamName} (${teamId})`);
+      }
+    } catch (error) {
+      console.error('Error in identify-team handler:', error);
     }
   });
 });
@@ -843,42 +943,43 @@ function endGame(gameCode: string) {
 
 // Update prepareTurn function to properly set up the turn-ready state
 function prepareTurn(gameCode: string) {
+  console.log(`Preparing turn for game: ${gameCode}`);
+  
   const game = games.get(gameCode);
-  if (!game?.currentGame) return;
-
-  // Get available categories (those that still have unused words)
-  const availableCategories = game.settings.categories.filter(category => {
-    const categoryWords = game.currentGame!.availableWords.filter(w => 
-      w.category === category && !game.currentGame!.usedWords.has(w.word)
-    );
-    return categoryWords.length > 0;
-  });
-
-  if (availableCategories.length === 0) {
-    console.log('No more words available in any category');
-    endGame(gameCode);
+  if (!game?.currentGame) {
+    console.error('Game not found or not initialized');
     return;
   }
-
-  // Select random category for this turn
-  const randomCategory = availableCategories[Math.floor(Math.random() * availableCategories.length)];
-  game.currentGame.currentCategory = randomCategory;
-
-  // Initialize turn state
-  game.currentGame.timeRemaining = game.settings.turnDuration;
+  
+  // Reset turn state
   game.currentGame.roundWords = {
     guessed: [],
     skipped: []
   };
-  game.currentGame.currentWord = null as unknown as Word;
-
-  // Emit turn-ready event with game state
+  game.currentGame.currentWord = null;
+  game.currentGame.turnStarted = false;
+  
+  // Log the current active team
+  const currentTeam = game.teams[game.currentGame.currentTeamIndex];
+  console.log(`Turn prepared for team: ${currentTeam.name} (${currentTeam.id})`);
+  
+  // Broadcast turn ready event with explicit active team ID
   io.to(gameCode).emit('turn-ready', {
     currentTeamIndex: game.currentGame.currentTeamIndex,
     currentRound: game.currentGame.currentRound,
     scores: game.currentGame.scores,
     currentCategory: game.currentGame.currentCategory,
-    teams: game.teams
+    teams: game.teams,
+    currentTeam: currentTeam,
+    activeTeamId: currentTeam.id
+  });
+  
+  // Log the mappings for the active team
+  const socketId = reverseSocketIdMap.get(currentTeam.id);
+  console.log('Current active team mapping check:', {
+    teamId: currentTeam.id,
+    mappedSocketId: socketId,
+    socketExists: socketId ? io.sockets.sockets.has(socketId) : false
   });
 }
 

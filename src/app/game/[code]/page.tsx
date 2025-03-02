@@ -14,17 +14,45 @@ import { GameOverView } from '@/components/GameOverView';
 
 export default function Game() {
   const params = useParams();
+  const gameCode = params.code as string;
   const router = useRouter();
   const dispatch = useDispatch();
-  const { currentGame, teams } = useSelector((state: RootState) => state.game);
-  const [gameState, setGameState] = useState<'waiting' | 'turn-ready' | 'turn-active' | 'game-over'>('waiting');
-  const [isMyTurn, setIsMyTurn] = useState(false);
+  
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [myTeamName, setMyTeamName] = useState<string | null>(null);
-  const [myTeamId, setMyTeamId] = useState<string | null>(null);
+  const [gameState, setGameState] = useState<'waiting' | 'turn-ready' | 'turn-active' | 'game-over'>('waiting');
+  const [isMyTurn, setIsMyTurn] = useState(false);
   
-  const gameCode = params.code as string;
+  // Read team info from URL params, localStorage, or previously stored values
+  const [myTeamId, setMyTeamId] = useState<string | null>(null);
+  const [myTeamName, setMyTeamName] = useState<string | null>(null);
+  
+  const currentGame = useSelector((state: RootState) => state.game.currentGame);
+  const currentWord = useSelector((state: RootState) => state.game.currentWord);
+  const teams = useSelector((state: RootState) => state.game.teams);
+  
+  // Load team info from localStorage if available (outside of useEffect)
+  useEffect(() => {
+    const storedTeamId = localStorage.getItem(`game-${gameCode}-teamId`);
+    const storedTeamName = localStorage.getItem(`game-${gameCode}-teamName`);
+    
+    if (storedTeamId) setMyTeamId(storedTeamId);
+    if (storedTeamName) setMyTeamName(storedTeamName);
+    
+    console.log('Loaded team info from localStorage:', { 
+      storedTeamId, 
+      storedTeamName 
+    });
+  }, [gameCode]);
+  
+  // Save team info to localStorage when it changes
+  useEffect(() => {
+    if (myTeamId && myTeamName) {
+      localStorage.setItem(`game-${gameCode}-teamId`, myTeamId);
+      localStorage.setItem(`game-${gameCode}-teamName`, myTeamName);
+      console.log('Saved team info to localStorage:', { myTeamId, myTeamName });
+    }
+  }, [myTeamId, myTeamName, gameCode]);
   
   const startTurn = useCallback(() => {
     console.log('Starting turn');
@@ -32,23 +60,10 @@ export default function Game() {
     socket.emit('start-turn', { gameCode });
   }, [gameCode]);
   
-  // When the component mounts, try to identify which team this client belongs to
-  useEffect(() => {
-    // Check in localStorage if we previously identified our team
-    const savedTeamId = localStorage.getItem(`game_${gameCode}_teamId`);
-    const savedTeamName = localStorage.getItem(`game_${gameCode}_teamName`);
-    
-    if (savedTeamId && savedTeamName) {
-      console.log('Found saved team info:', { savedTeamId, savedTeamName });
-      setMyTeamId(savedTeamId);
-      setMyTeamName(savedTeamName);
-    }
-  }, [gameCode]);
-
-  // Main socket connection and event handling effect
+  // Main socket connection and event handling
   useEffect(() => {
     console.log('Game component mounted, current state:', gameState);
-    
+
     const socket = socketService.getSocket();
     
     console.log('Connecting to game:', gameCode);
@@ -58,10 +73,28 @@ export default function Game() {
       socket.connect();
     }
     
+    // When we connect or reconnect, identify our team
     const onConnect = () => {
-      console.log('Socket connected, joining game room:', gameCode);
       setIsConnected(true);
+      console.log('Socket connected, joining game room');
+      
+      // Join the game room
       socket.emit('join-room', { gameCode });
+      
+      // Get team ID from state or localStorage
+      if (myTeamId || myTeamName) {
+        console.log('Identifying as team:', { myTeamId, myTeamName });
+        socket.emit('identify-team', {
+          gameCode,
+          teamId: myTeamId,
+          teamName: myTeamName
+        });
+      } else {
+        console.log('No team info available for identification');
+      }
+      
+      // Get latest game state
+      socket.emit('get-game-state', { gameCode });
     };
     
     const onDisconnect = () => {
@@ -104,83 +137,42 @@ export default function Game() {
     
     socket.on('turn-ready', (data) => {
       console.log('Turn ready event received:', data);
-      
-      // Store the game state in Redux
       dispatch(gameActions.setCurrentGame(data));
       
-      if (data.teams) {
-        dispatch(gameActions.setTeams(data.teams));
-        
-        // Try to identify our team if not already identified
-        if (!myTeamId) {
-          identifyMyTeam(data.teams);
-        }
-      }
+      // Update currentWord state to null since we don't have a word yet
+      dispatch(gameActions.setCurrentWord(null));
       
-      // Use the saved team ID to determine if it's our turn
+      // Check if it's our turn
       const activeTeamId = data.activeTeamId;
       const isActiveTeam = myTeamId === activeTeamId;
+      console.log('Is active team check:', { myTeamId, activeTeamId, isActiveTeam });
       
-      console.log('Turn ready check:', { 
-        mySocketId: socket.id, 
-        myTeamId,
-        myTeamName,
-        activeTeamId, 
-        isActiveTeam,
-        teams: data.teams?.map(t => ({ id: t.id, name: t.name }))
-      });
-      
-      setIsMyTurn(isActiveTeam);
+      // Set game state
       setGameState('turn-ready');
+      setIsMyTurn(isActiveTeam);
     });
-    
-    // Helper function to identify which team this client belongs to
-    const identifyMyTeam = (teamsList: any[]) => {
-      // First check if we're the host
-      if (teamsList.length > 0 && !myTeamId) {
-        // The host is usually the first team
-        const possibleTeam = teamsList[0];
-        
-        // Save our team information
-        console.log('Identified as team:', possibleTeam.name);
-        setMyTeamId(possibleTeam.id);
-        setMyTeamName(possibleTeam.name);
-        
-        // Store team info in localStorage for persistence
-        localStorage.setItem(`game_${gameCode}_teamId`, possibleTeam.id);
-        localStorage.setItem(`game_${gameCode}_teamName`, possibleTeam.name);
-        
-        // Also tell the server about our identity
-        socket.emit('identify-team', {
-          gameCode,
-          teamId: possibleTeam.id,
-          teamName: possibleTeam.name
-        });
-      }
-    };
     
     socket.on('turn-started', (data) => {
       console.log('Turn started event received:', data);
       dispatch(gameActions.setCurrentGame(data));
       
-      // Set game state to turn-active
-      setGameState('turn-active');
-      
-      // Check if it's our turn (we'll wait for the word-to-guess event to confirm)
+      // Check if it's our turn
       const activeTeamId = data.activeTeamId;
       const isActiveTeam = myTeamId === activeTeamId;
-      console.log('Turn started check:', { 
-        myTeamId, 
-        activeTeamId,
-        isActiveTeam
-      });
+      console.log('Turn started team check:', { myTeamId, activeTeamId, isActiveTeam });
       
+      // Set game state
+      setGameState('turn-active');
       setIsMyTurn(isActiveTeam);
     });
     
     socket.on('word-to-guess', (data) => {
       console.log('Word to guess received:', data);
       dispatch(gameActions.setCurrentWord(data));
+      
+      // This confirms we are the active team
+      setIsMyTurn(true);
+      console.log('Setting isMyTurn to true because we received a word');
     });
     
     socket.on('turn-end', (data) => {
