@@ -4,6 +4,7 @@ import { Server as SocketServer } from 'socket.io';
 import cors from 'cors';
 import { getWords, shuffleWords } from './utils/wordUtils';
 import { clearInterval } from 'timers';
+import { Server as HttpServer } from 'http';
 
 // Initialize Express app
 const app = express();
@@ -1031,7 +1032,7 @@ function startTimer(gameCode: string) {
 }
 
 // Export a function that takes an HTTP server and sets up Socket.IO
-export default function setupSocketServer(httpServer: typeof createServer) {
+export default function setupSocketServer(httpServer: HttpServer) {
   // Initialize Socket.IO with CORS settings
   const io = new SocketServer(httpServer, {
     cors: {
